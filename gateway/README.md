@@ -106,10 +106,26 @@ file with an Obsidian `![[filename.mp3]]` link. Set `FFMPEG_EXECUTABLE` when
 FFmpeg is not available on `PATH`, or use `OBSIDIAN_AUDIO_FORMAT=none` to
 disable audio export.
 
-Set `TTS_ENABLED=true` on macOS to let Cardputer play the latest Codex answer
-or the visible conversation. The gateway uses the local `say` voice and FFmpeg
-to return mono 16 kHz PCM WAV; the text and synthesized audio stay on the Mac.
-Choose a Russian voice with `TTS_VOICE=Milena` and adjust `TTS_RATE` as needed.
+Set `TTS_ENABLED=true` to let Cardputer play the latest Codex answer or the
+visible conversation. `TTS_PROVIDER=macos` uses the local `say` voice; choose a
+Russian voice with `TTS_VOICE=Milena` and adjust `TTS_RATE` as needed.
+
+For higher-quality cloud speech, use `TTS_PROVIDER=elevenlabs`, set a stable
+`ELEVENLABS_VOICE` name or ID, and choose `ELEVENLABS_MODEL` (the default is
+`eleven_multilingual_v2`). `TTS_NAME` is an optional on-device status label such
+as `Jarvis`. The gateway resolves named voices through `/v2/voices`, requests
+speech through `/v1/text-to-speech`, and converts the result with FFmpeg to mono
+16 kHz PCM WAV. The ElevenLabs key stays on the Mac: export
+`ELEVENLABS_API_KEY` for an interactive run, or store it in macOS Keychain as
+service `CardputerAgentGatewayElevenLabs`; `run-gateway.sh` reads that entry
+without copying it into the repository, launchd plist, or Cardputer.
+
+Every completed transcription receives a concise human-readable title. The
+configured transcript formatter generates it when available, with a bounded
+extractive fallback when it is not. Obsidian note/audio filenames include local
+date/time and that title, and async job responses include `title` plus
+`suggested_filename` so current firmware can safely rename the local WAV after
+delivery.
 
 `GET /v1/status` is an authenticated end-to-end diagnostic for Gateway,
 WhisperServer, Codex App Server, and the configured transcript formatter.

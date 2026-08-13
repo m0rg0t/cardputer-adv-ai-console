@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -41,6 +41,8 @@ class StoredVoiceJob:
     error: str
     transcript: str
     formatted: str
+    title: str
+    suggested_filename: str
     note_path: str
     codex_job_id: str
     attempts: int
@@ -58,6 +60,8 @@ class StoredVoiceJob:
             "destination": self.destination,
             "thread_id": self.thread_id or None,
             "profile": self.profile,
+            "title": self.title or None,
+            "suggested_filename": self.suggested_filename or None,
             "sha256": self.digest,
             "note_path": self.note_path or None,
             "codex_job_id": self.codex_job_id or None,
@@ -106,6 +110,8 @@ class NoteStore:
                     error TEXT NOT NULL DEFAULT '',
                     transcript TEXT NOT NULL DEFAULT '',
                     formatted TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    suggested_filename TEXT NOT NULL DEFAULT '',
                     note_path TEXT NOT NULL DEFAULT '',
                     codex_job_id TEXT NOT NULL DEFAULT '',
                     attempts INTEGER NOT NULL DEFAULT 0,
@@ -114,6 +120,18 @@ class NoteStore:
                 )
                 """
             )
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(voice_jobs)")
+            }
+            if "title" not in columns:
+                connection.execute(
+                    "ALTER TABLE voice_jobs ADD COLUMN title TEXT NOT NULL DEFAULT ''"
+                )
+            if "suggested_filename" not in columns:
+                connection.execute(
+                    "ALTER TABLE voice_jobs ADD COLUMN suggested_filename "
+                    "TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS voice_jobs_status_idx "
                 "ON voice_jobs(status, created_at)"
@@ -169,7 +187,7 @@ class NoteStore:
                     device_name,
                     str(note_path),
                     transcript,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
         return StoredNote(digest, str(note_path), transcript)
@@ -222,7 +240,7 @@ class NoteStore:
                     stored.note_path,
                     stored.transcript,
                     stored.job_id,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
         return stored
@@ -240,7 +258,7 @@ class NoteStore:
         profile: str,
         audio_path: Path,
     ) -> StoredVoiceJob:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as connection:
             connection.execute(
                 """
@@ -310,19 +328,27 @@ class NoteStore:
 
     def update_voice_job(self, job_id: str, **changes: object) -> StoredVoiceJob:
         allowed = {
-            "status", "stage", "progress", "error", "transcript", "formatted",
-            "note_path", "codex_job_id", "attempts", "audio_path",
+            "status",
+            "stage",
+            "progress",
+            "error",
+            "transcript",
+            "formatted",
+            "title",
+            "suggested_filename",
+            "note_path",
+            "codex_job_id",
+            "attempts",
+            "audio_path",
         }
         unknown = set(changes) - allowed
         if unknown:
             raise ValueError(f"Unsupported voice job fields: {sorted(unknown)}")
-        changes["updated_at"] = datetime.now(timezone.utc).isoformat()
+        changes["updated_at"] = datetime.now(UTC).isoformat()
         columns = ", ".join(f"{name} = ?" for name in changes)
         values = tuple(changes.values()) + (job_id,)
         with self._connect() as connection:
-            connection.execute(
-                f"UPDATE voice_jobs SET {columns} WHERE id = ?", values
-            )
+            connection.execute(f"UPDATE voice_jobs SET {columns} WHERE id = ?", values)
         job = self.get_voice_job(job_id)
         if job is None:
             raise KeyError(job_id)
@@ -330,7 +356,7 @@ class NoteStore:
 
     def recover_voice_jobs(self) -> None:
         """Return interrupted work to the queue after a gateway restart."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         with self._connect() as connection:
             connection.execute(
                 """

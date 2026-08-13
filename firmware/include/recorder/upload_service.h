@@ -182,6 +182,9 @@ private:
     bool controlVoiceJob(const String& filename, const char* action);
     bool wasSent(const String& name, std::uint32_t size);
     bool markSent(const String& name, std::uint32_t size);
+    bool renameCompletedRecording(const String& filename,
+                                  const String& suggestedFilename,
+                                  String& finalFilename);
     bool writeRecordingMetadata(const String& filename,
                                 const JsonDocument& response);
     String recordingMetadataPath(const String& filename) const;

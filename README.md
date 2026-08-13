@@ -56,18 +56,25 @@ repository. See [SECURITY.md](SECURITY.md) before publishing or deploying it.
 - Queue recordings offline and upload them when configured Wi-Fi returns.
 - Accept uploads into a restart-safe asynchronous gateway queue and show the
   exact transcription/formatting/Obsidian/Codex stage on the device.
+- Generate a concise title after transcription, save Obsidian Markdown and MP3
+  with that title plus date/time, and rename the delivered WAV and its sidecars
+  on the Cardputer to the same human-readable title.
 - Manage pending work in an Outbox with details, retry, and cancel actions.
 - Authenticate to a configurable gateway without storing transcription-provider
   credentials on the device.
 - Require certificate validation for HTTPS uploads.
 - Store recorder, Wi-Fi, endpoint, certificate, and delivery state on microSD.
 - List and open existing local Codex Desktop/CLI chats through a gateway.
+- Switch the task list between compact one-line names and full wrapped names.
 - Type messages on the Cardputer keyboard or send a recording to a selected
   Codex chat after server-side transcription.
 - Poll streamed Codex work, show the accumulated answer, and approve or decline
   command/file requests from the device.
 - Create and interrupt Codex tasks, and send an already cached transcript to a
   selected task without transcribing the audio again.
+- Create a new local Codex task and immediately record its first voice prompt.
+- Speak Codex replies with local macOS voices or an ElevenLabs voice selected
+  by stable voice ID, while keeping provider credentials off the device.
 - Route a recording to Obsidian, Codex, or both without duplicating audio or
   transcription work.
 - Persist an exact route sidecar beside every WAV so delayed uploads cannot be
@@ -137,7 +144,8 @@ platformio test -d firmware -e native-tests
 | `C` in library | Open Codex chat list |
 | `L` in Codex | Return directly to the recorder library |
 | `Enter` in chat list | Open selected conversation |
-| `N` in chat list | Create a new Codex task |
+| `N` in chat list | Create a new local Codex task and type its first prompt |
+| `V` in chat list | Create a new local Codex task and record its first prompt |
 | `T` in Codex | Type a message to the selected chat |
 | `R` in Codex | Record a voice message for the selected chat |
 | `B` in Codex | Record once, save to Obsidian, and send to Codex |
@@ -185,8 +193,8 @@ platformio test -d firmware -e native-tests
 All persistent configuration is portable with the card:
 
 - `/RECORDER.CFG`: brightness, screen modes, low-battery save, seeking, wake
-  behavior, library sorting, and Codex/transcript font sizes. The firmware
-  creates it on first boot and updates it from the UI.
+  behavior, library sorting, Codex/transcript font sizes, and wrapped Codex task
+  names. The firmware creates it on first boot and updates it from the UI.
 - `/AGENT.CFG`: Wi-Fi credentials, HTTPS gateway/discovery settings, device
   identity/token, and ordered voice-processing profiles.
 - `/AGENT_WIFI.CFG`: extra Wi-Fi networks added from the scan screen. It is
@@ -246,6 +254,7 @@ applied immediately. Screen saver options are grouped under `Screen Saver`:
 | Compact Audio | 16 kHz standard, 8 kHz low-bandwidth PCM |
 | Reading / Codex Chat | 1x, 2x |
 | Reading / Transcripts | 1x, 2x |
+| Reading / Chat Names | Full, 1 Line |
 | Library Sort | Newest, Oldest, Status, A-Z |
 | Low Battery Save | Off, 1%, 5%, 10% |
 | Seek Step | 5 sec, 10 sec, 20 sec, 60 sec |
@@ -287,6 +296,12 @@ sorting puts failed and active jobs ahead of queued, delivered, and completed
 transcripts. When an SD timestamp is unavailable, filename order is used as a
 stable fallback. The selected mode is stored in `RECORDER.CFG` and restored
 after reboot.
+
+After transcription completes, the gateway generates a concise title. Notes
+are stored as `YYYY-MM-DD HH-MM-SS - Title - hash.md`; the Cardputer renames the
+matching WAV to `YYYY-MM-DD HH-MM-SS - Title.WAV` only after the durable job is
+complete. Route and metadata sidecars move with the recording; an existing
+filename is never overwritten.
 
 Locked recordings show `*` before the filename and cannot be deleted until
 unlocked. Lock state is stored on the card in `RECORDER.LCK`; if the file is

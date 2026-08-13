@@ -9,6 +9,8 @@
    Screen saver appearance is stored as `screen_style`: `0` selects Cyber
    Grid and `1` selects Data Rain. It is easier to change from the on-device
    `Settings → Screen Saver → Visual Style` menu.
+   `codex_names_full=true` shows full wrapped Codex task names;
+   switch it under `Settings → Reading → Chat Names`.
    Add `wifi_ssid_2`/`wifi_password_2` through profile 5 for fallback
    networks. Agent Console tries them in numerical order, shows the active
    profile and connected SSID under `Settings → Network`, and starts over
@@ -41,6 +43,9 @@ delivery stable when the active chat changes later. After gateway acceptance,
 Agent Console writes a matching `.AGENT.JSON` sidecar containing the durable
 job ID, stage/progress, attempts, errors, Obsidian/Codex results, and transcript.
 It updates the sent ledger only after the asynchronous job reaches `completed`.
+At that point it also applies the gateway's dated, transcript-derived WAV name
+and moves the matching route and metadata sidecars. Existing names are never
+overwritten.
 
 The Network page also shows the most recent ESP32 disconnect reason. Common
 results include `NO_AP_FOUND (201)` when the SSID is not visible and

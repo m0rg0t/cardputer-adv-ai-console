@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Add compact and full wrapped Codex task-name modes, persisted under Reading
+  settings.
+- Add a one-key flow that creates a local Codex task and records its first
+  voice request.
+- Add ElevenLabs speech synthesis with named-voice resolution, stable voice-ID
+  configuration, WAV caching/conversion, Keychain loading, and a configured
+  Jarvis-style preset.
+- Generate transcript-derived titles for Obsidian notes and safely rename
+  completed Cardputer WAVs and route metadata with the same dated
+  human-readable title.
+
 ## 2.8.1 - Selectable screen saver style
 
 - Add a lightweight animated Data Rain screen saver alongside Cyber Grid.

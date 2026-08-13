@@ -1286,6 +1286,47 @@ bool UploadService::markSent(const String& name, std::uint32_t size)
     return true;
 }
 
+bool UploadService::renameCompletedRecording(
+    const String& filename, const String& suggestedFilename,
+    String& finalFilename)
+{
+    finalFilename = filename;
+    String candidate = suggestedFilename;
+    candidate.trim();
+    if (candidate.length() < 5 || candidate.length() > 180 ||
+        candidate.indexOf('/') >= 0 || candidate.indexOf('\\') >= 0) {
+        return true;
+    }
+    String lower = candidate;
+    lower.toLowerCase();
+    if (!lower.endsWith(".wav")) {
+        return true;
+    }
+    if (candidate.equalsIgnoreCase(filename)) {
+        return true;
+    }
+    const String newWav = "/" + candidate;
+    if (storage_->exists(newWav.c_str())) {
+        return true;
+    }
+    const String oldWav = "/" + filename;
+    const String oldMetadata = recordingMetadataPath(filename);
+    const String newMetadata = recordingMetadataPath(candidate);
+    const String oldRoute = routePath(oldWav);
+    const String newRoute = routePath(newWav);
+    if (!storage_->rename(oldWav.c_str(), newWav.c_str())) {
+        return false;
+    }
+    if (storage_->exists(oldMetadata.c_str())) {
+        storage_->rename(oldMetadata.c_str(), newMetadata.c_str());
+    }
+    if (storage_->exists(oldRoute.c_str())) {
+        storage_->rename(oldRoute.c_str(), newRoute.c_str());
+    }
+    finalFilename = candidate;
+    return true;
+}
+
 bool UploadService::writeRecordingMetadata(
     const String& filename, const JsonDocument& response)
 {
@@ -1468,7 +1509,14 @@ bool UploadService::pollVoiceJob(const String& filename,
     }
     const String state = response["status"] | "";
     if (state == "completed") {
-        if (!wasSent(filename, size) && !markSent(filename, size)) {
+        String finalFilename;
+        const String suggestedFilename = response["suggested_filename"] | "";
+        if (!renameCompletedRecording(filename, suggestedFilename,
+                                      finalFilename)) {
+            lastGatewayDiagnostic_ = "JOB OK; SD RENAME ERROR";
+            return false;
+        }
+        if (!wasSent(finalFilename, size) && !markSent(finalFilename, size)) {
             lastGatewayDiagnostic_ = "JOB OK; SD LEDGER ERROR";
             return false;
         }

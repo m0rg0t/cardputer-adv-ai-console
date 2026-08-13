@@ -21,6 +21,14 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   export OPENAI_API_KEY
 fi
 
+# ElevenLabs credentials follow the same private Keychain path. An exported
+# environment variable still wins for ad-hoc development runs.
+if [[ -z "${ELEVENLABS_API_KEY:-}" ]]; then
+  ELEVENLABS_API_KEY="$(/usr/bin/security find-generic-password \
+    -a "$USER" -s CardputerAgentGatewayElevenLabs -w 2>/dev/null || true)"
+  export ELEVENLABS_API_KEY
+fi
+
 UV_EXECUTABLE="${UV_EXECUTABLE:-$(command -v uv || true)}"
 if [[ -z "$UV_EXECUTABLE" ]]; then
   print -u2 "uv is not installed. See https://docs.astral.sh/uv/"

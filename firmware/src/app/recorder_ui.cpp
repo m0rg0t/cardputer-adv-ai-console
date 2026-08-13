@@ -458,7 +458,7 @@ void RecorderApp::draw()
                 "When Home", "While Recording", "While Playing",
                 "Triple-Press Wake", "Visual Style"};
             const char* readingLabels[kReadingSettingsCount] = {
-                "Codex Chat", "Transcripts"};
+                "Codex Chat", "Transcripts", "Chat Names"};
             const std::uint8_t settingCount =
                 screenSaverPage ? kScreenSaverSettingsCount
                                 : readingPage ? kReadingSettingsCount
@@ -571,7 +571,7 @@ void RecorderApp::draw()
             {"ENTER  pause", "ESC  stop", "LEFT/RIGHT seek",
              "UP/DOWN vol  [ ] speed"},
             {"ENTER  details", "R  retry one", "A  retry all", "X  cancel"},
-            {"ENTER  open", "N  new task", "R voice  T type",
+            {"ENTER  open", "N type V voice", "R voice  T type",
              "B both  L library"},
             {"UP/DOWN  scroll", "E  jump to end", "V  speak reply",
              "A  speak chat"},
@@ -669,6 +669,21 @@ void RecorderApp::draw()
             display.setTextColor(muted, background);
             display.setCursor(12, 64);
             display.print(message_);
+        } else if (settings_.codexChatNamesMultiline) {
+            display.fillRoundRect(5, 27, display.width() - 10, 79, 4,
+                                  selectedPanel);
+            display.setFont(&fonts::efontCN_10);
+            display.setTextColor(TFT_WHITE, selectedPanel);
+            display.setCursor(10, 31);
+            display.setTextWrap(true);
+            display.print(codexChats_[selectedCodexChat_].name);
+            display.setTextWrap(false);
+            display.setTextFont(1);
+            display.setTextDatum(bottom_right);
+            display.drawString(String(selectedCodexChat_ + 1) + "/" +
+                                   String(codexChats_.size()),
+                               display.width() - 9, 103);
+            display.setTextDatum(top_left);
         } else {
             int first = max(0, selectedCodexChat_ - 1);
             if (first + 4 > static_cast<int>(codexChats_.size())) {
@@ -701,10 +716,10 @@ void RecorderApp::draw()
         display.setTextFont(1);
         display.setTextColor(accent, panel);
         display.setCursor(7, 120);
-        display.print("N NEW  ENTER OPEN");
+        display.print("N TYPE V VOICE");
         display.setTextDatum(top_right);
         display.setTextColor(muted, panel);
-        display.drawString("C REFRESH  ESC", display.width() - 7, 120);
+        display.drawString("ENTER OPEN  ESC", display.width() - 7, 120);
         display.setTextDatum(top_left);
     } else if (state_ == State::kCodexConversation) {
         if (codexJob_.approvalId.length() > 0) {

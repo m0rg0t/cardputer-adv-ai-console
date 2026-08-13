@@ -150,8 +150,9 @@ void RecorderApp::loadLocks()
     while (file.available()) {
         String name = file.readStringUntil('\n');
         name.trim();
-        name.toUpperCase();
-        if (name.endsWith(".WAV") &&
+        String extension = name;
+        extension.toLowerCase();
+        if (extension.endsWith(".wav") &&
             std::find(lockedFiles_.begin(), lockedFiles_.end(), name) ==
                 lockedFiles_.end()) {
             lockedFiles_.push_back(name);

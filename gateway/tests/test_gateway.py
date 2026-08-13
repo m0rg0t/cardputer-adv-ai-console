@@ -7,8 +7,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from voice_gateway.app import create_app
 from voice_gateway.agent import AgentFormatter
+from voice_gateway.app import create_app
 from voice_gateway.codex import CodexApproval, CodexJob
 from voice_gateway.config import Settings
 from voice_gateway.speech import SpeechSynthesizer
@@ -152,12 +152,8 @@ async def test_upload_exports_mp3_and_embeds_it_in_note(
         "Content-Type": "audio/wav",
         "Content-Length": str(len(audio)),
     }
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/v1/voice-notes", content=audio, headers=headers
-        )
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/voice-notes", content=audio, headers=headers)
 
     assert response.status_code == 201
     note_path = Path(response.json()["note_path"])
@@ -219,9 +215,7 @@ async def test_retry_all_failed_voice_jobs_for_device(settings: Settings) -> Non
         app.state.store.update_voice_job(
             job_id, status="failed", stage="transcribing", error="connection timeout"
         )
-        retried = await client.post(
-            "/v1/voice/jobs/retry-failed", headers=headers
-        )
+        retried = await client.post("/v1/voice/jobs/retry-failed", headers=headers)
     assert retried.status_code == 202
     assert retried.json()["count"] == 1
     assert app.state.store.get_voice_job(job_id).status == "retrying"
@@ -242,7 +236,64 @@ async def test_codex_speech_reports_disabled_tts(settings: Settings) -> None:
 
 def test_speech_cleanup_makes_markdown_readable(settings: Settings) -> None:
     speech = SpeechSynthesizer(settings)
-    assert speech._clean("**Done** [report](https://example.com) `ok`") == "Done report ok"
+    assert (
+        speech._clean("**Done** [report](https://example.com) `ok`") == "Done report ok"
+    )
+
+
+@pytest.mark.asyncio
+async def test_elevenlabs_speech_resolves_named_voice_and_caches_wav(
+    settings: Settings, tmp_path: Path
+) -> None:
+    fake_ffmpeg = tmp_path / "fake-ffmpeg"
+    fake_ffmpeg.write_text(
+        "#!/bin/sh\nfor output do :; done\nprintf 'RIFFmock-wave' > \"$output\"\n",
+        encoding="utf-8",
+    )
+    fake_ffmpeg.chmod(0o755)
+    requests: list[str] = []
+
+    def elevenlabs(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        assert request.headers["xi-api-key"] == "test-elevenlabs-key"
+        if request.url.path == "/v2/voices":
+            assert request.url.params["search"] == "Jarvis"
+            return httpx.Response(
+                200,
+                json={
+                    "voices": [{"voice_id": "jarvisvoice123456789", "name": "Jarvis"}]
+                },
+            )
+        assert request.url.path.endswith("/jarvisvoice123456789")
+        return httpx.Response(200, content=b"ID3-elevenlabs-audio")
+
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "tts_enabled": True,
+            "tts_provider": "elevenlabs",
+            "elevenlabs_api_key": "test-elevenlabs-key",
+            "elevenlabs_voice": "Jarvis",
+            "ffmpeg_executable": str(fake_ffmpeg),
+        }
+    )
+    speech = SpeechSynthesizer(configured, httpx.MockTransport(elevenlabs))
+    first = await speech.synthesize("**Готово.**")
+    second = await speech.synthesize("**Готово.**")
+
+    assert first == b"RIFFmock-wave"
+    assert second == first
+    assert requests == ["/v2/voices", "/v1/text-to-speech/jarvisvoice123456789"]
+
+
+def test_title_fallback_is_readable_and_bounded(settings: Settings) -> None:
+    formatter = AgentFormatter(settings)
+    title = formatter._fallback_title(
+        "Так, пожалуйста, запиши обсудить перенос длинных названий чатов. "
+        "Остальные детали позже."
+    )
+    assert title == "обсудить перенос длинных названий чатов"
+    assert len(title) <= 72
 
 
 @pytest.mark.asyncio
@@ -334,9 +385,7 @@ async def test_routed_voice_returns_bounded_transcript_preview(
         "Content-Type": "audio/wav",
         "Content-Length": str(len(audio)),
     }
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post("/v1/voice", content=audio, headers=headers)
         duplicate = await client.post("/v1/voice", content=audio, headers=headers)
 
@@ -364,29 +413,30 @@ async def test_async_voice_job_reports_progress_and_completes(
         "Content-Type": "audio/wav",
         "Content-Length": str(len(audio)),
     }
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         accepted = await client.post("/v1/voice/jobs", content=audio, headers=headers)
         assert accepted.status_code == 202
         assert accepted.json()["status"] == "accepted"
         job_id = accepted.json()["id"]
 
         processed = await app.state.process_pending_voice_jobs()
-        completed = await client.get(
-            f"/v1/voice/jobs/{job_id}", headers=headers
-        )
-        duplicate = await client.post(
-            "/v1/voice/jobs", content=audio, headers=headers
-        )
+        completed = await client.get(f"/v1/voice/jobs/{job_id}", headers=headers)
+        duplicate = await client.post("/v1/voice/jobs", content=audio, headers=headers)
 
     assert processed == 1
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
     assert completed.json()["progress"] == 100
     assert completed.json()["profile"] == "meeting"
+    assert completed.json()["title"] == "Test transcription for REC0004.WAV"
+    assert completed.json()["suggested_filename"].endswith(
+        " - Test transcription for REC0004.WAV"
+    )
     assert completed.json()["transcript"] == "Test transcription for REC0004.WAV."
-    assert Path(completed.json()["note_path"]).exists()
+    note_path = Path(completed.json()["note_path"])
+    assert note_path.exists()
+    assert "Test transcription for REC0004.WAV" in note_path.name
+    assert "# Test transcription for REC0004.WAV" in note_path.read_text()
     assert duplicate.status_code == 200
     assert duplicate.json()["id"] == job_id
 
@@ -405,14 +455,10 @@ async def test_async_voice_job_can_be_canceled_before_processing(
         "Content-Type": "audio/wav",
         "Content-Length": str(len(audio)),
     }
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         accepted = await client.post("/v1/voice/jobs", content=audio, headers=headers)
         job_id = accepted.json()["id"]
-        canceled = await client.post(
-            f"/v1/voice/jobs/{job_id}/cancel", headers=headers
-        )
+        canceled = await client.post(f"/v1/voice/jobs/{job_id}/cancel", headers=headers)
         processed = await app.state.process_pending_voice_jobs()
 
     assert canceled.status_code == 200
@@ -434,9 +480,7 @@ async def test_reprocess_reuses_transcript_with_another_profile(
         "Content-Type": "audio/wav",
         "Content-Length": str(len(audio)),
     }
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         accepted = await client.post("/v1/voice/jobs", content=audio, headers=headers)
         await app.state.process_pending_voice_jobs()
         source_id = accepted.json()["id"]

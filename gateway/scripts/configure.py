@@ -11,7 +11,6 @@ import shlex
 import sys
 from pathlib import Path
 
-
 GATEWAY_DIR = Path(__file__).resolve().parent.parent
 EXAMPLE_ENV = GATEWAY_DIR / ".env.example"
 
@@ -123,13 +122,14 @@ def validate_vault(vault: Path) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", type=Path, help="absolute Obsidian Vault path")
-    parser.add_argument("--notes-folder", default="Inbox/Cardputer Voice")
+    parser.add_argument("--notes-folder")
     parser.add_argument("--env-file", type=Path, default=GATEWAY_DIR / ".env")
     parser.add_argument("--non-interactive", action="store_true")
+    parser.add_argument("--tts-provider", choices=("macos", "elevenlabs"))
+    parser.add_argument("--tts-name")
+    parser.add_argument("--elevenlabs-voice")
+    parser.add_argument("--elevenlabs-model")
     args = parser.parse_args()
-
-    if args.non_interactive and args.vault is None:
-        parser.error("--non-interactive requires --vault")
 
     env_path = args.env_file.expanduser().resolve()
     template = EXAMPLE_ENV.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -140,17 +140,29 @@ def main() -> int:
     )
     values = parse_env(current_lines)
 
-    vault = args.vault or select_vault(discover_obsidian_vaults())
+    configured_vault = values.get("OBSIDIAN_VAULT_ROOT", "")
+    if args.non_interactive and args.vault is None and not configured_vault:
+        parser.error("--non-interactive requires --vault for a new configuration")
+    vault = (
+        args.vault
+        or (Path(configured_vault) if args.non_interactive else None)
+        or select_vault(discover_obsidian_vaults())
+    )
     try:
         vault = validate_vault(vault)
     except ValueError as error:
         parser.error(str(error))
 
     values["OBSIDIAN_VAULT_ROOT"] = str(vault)
-    values["OBSIDIAN_NOTES_FOLDER"] = (
+    notes_folder = (
         args.notes_folder
+        or values.get("OBSIDIAN_NOTES_FOLDER")
+        or "Inbox/Cardputer Voice"
+    )
+    values["OBSIDIAN_NOTES_FOLDER"] = (
+        notes_folder
         if args.non_interactive
-        else prompt("Folder inside the Vault", args.notes_folder)
+        else prompt("Folder inside the Vault", notes_folder)
     )
     if not values.get("VOICE_DEVICE_TOKEN") or values["VOICE_DEVICE_TOKEN"].startswith(
         "replace-"
@@ -164,11 +176,43 @@ def main() -> int:
         )
         values["TRANSCRIPTION_PROVIDER"] = provider
         values["CODEX_ENABLED"] = str(
-            prompt_bool("Enable local Codex tasks", values.get("CODEX_ENABLED") == "true")
+            prompt_bool(
+                "Enable local Codex tasks", values.get("CODEX_ENABLED") == "true"
+            )
         ).lower()
         values["TTS_ENABLED"] = str(
-            prompt_bool("Enable local text-to-speech", values.get("TTS_ENABLED") == "true")
+            prompt_bool(
+                "Enable local text-to-speech", values.get("TTS_ENABLED") == "true"
+            )
         ).lower()
+        if values["TTS_ENABLED"] == "true":
+            values["TTS_PROVIDER"] = prompt(
+                "TTS provider (macos/elevenlabs)",
+                values.get("TTS_PROVIDER", "macos"),
+            ).lower()
+            if values["TTS_PROVIDER"] == "elevenlabs":
+                values["TTS_NAME"] = prompt(
+                    "TTS preset label",
+                    values.get("TTS_NAME", "Jarvis"),
+                )
+                values["ELEVENLABS_VOICE"] = prompt(
+                    "ElevenLabs voice name or ID",
+                    values.get("ELEVENLABS_VOICE", "onwK4e9ZLuTAKqWW03F9"),
+                )
+                values["ELEVENLABS_MODEL"] = prompt(
+                    "ElevenLabs model",
+                    values.get("ELEVENLABS_MODEL", "eleven_multilingual_v2"),
+                )
+
+    if args.tts_provider:
+        values["TTS_ENABLED"] = "true"
+        values["TTS_PROVIDER"] = args.tts_provider
+    if args.tts_name is not None:
+        values["TTS_NAME"] = args.tts_name
+    if args.elevenlabs_voice is not None:
+        values["ELEVENLABS_VOICE"] = args.elevenlabs_voice
+    if args.elevenlabs_model is not None:
+        values["ELEVENLABS_MODEL"] = args.elevenlabs_model
 
     env_path.parent.mkdir(parents=True, exist_ok=True)
     env_path.write_text(render_env(template, values), encoding="utf-8")

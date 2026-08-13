@@ -58,12 +58,9 @@ void RecorderApp::update()
         networkUiAllowed &&
         codexSpeechState_.load(std::memory_order_acquire) == 0);
     if (uploader_.takeRecordingChanged()) {
+        scanFiles();
         if (state_ == State::kOutbox) {
             refreshOutbox();
-        }
-        if (state_ == State::kBrowsing &&
-            settings_.librarySortMode == LibrarySortMode::kStatus) {
-            sortFiles();
         }
         if (settingsPage_ == SettingsPage::kServices) {
             servicePendingCount_ = uploader_.pendingRecordingCount();
