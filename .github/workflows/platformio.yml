@@ -15,6 +15,11 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio==6.1.19
       - name: Build firmware
-        run: platformio run -e cardputer-adv-recorder
+        run: platformio run -d firmware -e cardputer-adv-recorder
       - name: Run native tests
-        run: platformio test -e native-tests
+        run: platformio test -d firmware -e native-tests
+      - name: Test gateway
+        run: |
+          pip install uv
+          cd gateway
+          uv run --extra dev pytest

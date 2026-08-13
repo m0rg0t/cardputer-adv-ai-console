@@ -1,6 +1,10 @@
-# Cardputer ADV Recorder
+# Cardputer ADV Agent Console
 
-A voice recorder and WAV player for the M5Stack Cardputer ADV.
+A combined voice-note recorder and remote Codex client for the M5Stack
+Cardputer ADV. Notes and Codex messages share recording, Wi-Fi, HTTPS, and
+offline delivery infrastructure, but remain explicit destinations (`NOTE`,
+`CODEX`, or `BOTH`). It is packaged as an app-only binary so it can live
+alongside other applications managed by M5Apps.
 
 The firmware records 16 kHz, mono, 16-bit PCM WAV files directly to microSD.
 Recording and playback are streamed through fixed-size buffers, so file length
@@ -8,6 +12,20 @@ is not limited by available RAM.
 
 > Only Cardputer ADV is supported. The original Cardputer uses different audio
 > hardware and is not compatible with this firmware.
+
+## Repository contents
+
+| Directory | Contents |
+| --- | --- |
+| [`firmware/`](firmware/) | Complete PlatformIO source and SD-card templates |
+| [`gateway/`](gateway/) | Local Python backend for Whisper, Codex, TTS, and Obsidian |
+| [`release/firmware/`](release/firmware/) | Verified, ready-to-install M5Apps binary |
+| [`docs/`](docs/) | Architecture, operation, troubleshooting, and hardware QA |
+| [`site/`](site/) | Project website, release download, and Sites deployment source |
+
+Private recordings, transcripts, credentials, certificates, gateway databases,
+device backups, and third-party firmware are deliberately not part of the
+repository. See [SECURITY.md](SECURITY.md) before publishing or deploying it.
 
 ## Screenshots
 
@@ -35,6 +53,42 @@ is not limited by available RAM.
 - Auto-save an active recording at the configured low battery threshold.
 - Recover from missing cards, low space, and storage errors.
 - Finalize WAV headers and sync storage before presenting a recording as saved.
+- Queue recordings offline and upload them when configured Wi-Fi returns.
+- Accept uploads into a restart-safe asynchronous gateway queue and show the
+  exact transcription/formatting/Obsidian/Codex stage on the device.
+- Manage pending work in an Outbox with details, retry, and cancel actions.
+- Authenticate to a configurable gateway without storing transcription-provider
+  credentials on the device.
+- Require certificate validation for HTTPS uploads.
+- Store recorder, Wi-Fi, endpoint, certificate, and delivery state on microSD.
+- List and open existing local Codex Desktop/CLI chats through a gateway.
+- Type messages on the Cardputer keyboard or send a recording to a selected
+  Codex chat after server-side transcription.
+- Poll streamed Codex work, show the accumulated answer, and approve or decline
+  command/file requests from the device.
+- Create and interrupt Codex tasks, and send an already cached transcript to a
+  selected task without transcribing the audio again.
+- Route a recording to Obsidian, Codex, or both without duplicating audio or
+  transcription work.
+- Persist an exact route sidecar beside every WAV so delayed uploads cannot be
+  redirected by a later chat selection.
+- Show queued, delivered, and transcribed state in the recording library and
+  keep a transcript preview on SD for the recording details screen.
+- Show Wi-Fi state, active profile, SSID, local IP, last disconnect reason, and
+  the selected network's latest radio observation on the Network settings page.
+- Try up to five ordered Wi-Fi profiles from `AGENT.CFG` and show which profile
+  supplied the active connection.
+- Scan visible Wi-Fi networks on-device, including RSSI, channel, and security,
+  then select a network and enter its password from the Cardputer keyboard.
+- Save successfully connected ad-hoc networks to `/AGENT_WIFI.CFG` on microSD
+  so they are tried on later boots without changing the main gateway config.
+- Apply `default`, `meeting`, `idea`, or `task` profiles to recordings and
+  reprocess a finished transcript under another profile.
+- Optionally discover the local gateway through Bonjour/mDNS, with a pinned
+  HTTPS URL as fallback.
+- Pause/resume capture and optionally record 8 kHz compact PCM WAVs for half
+  the SD and upload size.
+- Keep `W`, `G`, and `Q` Wi-Fi/gateway/queue indicators visible in the header.
 
 ## Requirements
 
@@ -42,40 +96,66 @@ is not limited by available RAM.
 - Writable FAT32 microSD card
 - PlatformIO Core 6.1.19 or PlatformIO IDE
 
-## Build and upload
+## Build and install with M5Apps
 
 ```sh
-platformio run
-platformio run --target upload
-platformio device monitor
+platformio run -d firmware -e cardputer-adv-recorder
 ```
 
-Release firmware is published as a complete image. Flash it at offset `0x0000`:
+Copy `firmware/.pio/build/cardputer-adv-recorder/firmware.bin` to the microSD card, then
+select it in **M5Apps > Installer > SD**. This is the application binary; do not
+flash a merged/full image at offset `0x0000`, because that would replace M5Apps.
+
+You can also use the checked release image in
+[`release/firmware/`](release/firmware/). The serial monitor runs at 115200
+baud. See [`firmware/sdcard/README.md`](firmware/sdcard/README.md)
+for card setup and [`gateway/README.md`](gateway/README.md) for transcription and
+Obsidian delivery.
+
+To run host-side tests:
 
 ```sh
-esptool.py --chip esp32s3 --baud 460800 write_flash \
-  0x0000 cardputer-adv-recorder-vX.Y.Z.bin
-```
-
-The serial monitor runs at 115200 baud. To run host-side tests:
-
-```sh
-platformio test -e native-tests
+platformio test -d firmware -e native-tests
 ```
 
 ## Project layout
 
-- `src/app`: recorder state flow, UI, settings, screen saver, and file browser.
-- `src/hardware`: Cardputer ADV board, audio, power, and microSD services.
-- `src/media`: WAV parsing, writing, and recording filename helpers.
+- `firmware/src/app`: recorder state flow, UI, settings, and screen saver.
+- `firmware/src/hardware`: Cardputer ADV board, audio, power, and microSD.
+- `firmware/src/media`: WAV parsing, writing, and filename helpers.
+- `gateway/voice_gateway`: authenticated local backend and durable job queue.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
 | `R` | Start recording |
+| `P` in library | Cycle the note-processing profile |
+| `S` in library | Cycle sorting: newest, oldest, processing status, name |
+| `O` in library | Open Outbox |
+| `I` in library | Open recording delivery details and transcript |
+| `C` in library | Open Codex chat list |
+| `L` in Codex | Return directly to the recorder library |
+| `Enter` in chat list | Open selected conversation |
+| `N` in chat list | Create a new Codex task |
+| `T` in Codex | Type a message to the selected chat |
+| `R` in Codex | Record a voice message for the selected chat |
+| `B` in Codex | Record once, save to Obsidian, and send to Codex |
+| `E` in Codex conversation | Jump to the end of the conversation |
+| `V` in Codex conversation | Speak the latest Codex response locally on the Mac |
+| `A` in Codex conversation | Speak the recent conversation locally on the Mac |
+| `X` while Codex works | Interrupt the current turn |
+| `Enter` on an approval | Approve once |
+| `S` on an approval | Approve for this Codex session |
+| `D` / `X` on an approval | Decline / cancel the requesting turn |
 | `H` in library | Open help |
+| `H` in Outbox, details, Codex, or Settings | Open contextual help and return to the same screen |
 | `Enter`, `Esc`, or `R` | Stop and save a recording |
+| `P` or `Space` while recording | Pause or resume capture |
+| `E` in recording details | Reprocess cached transcript with selected profile |
+| `C` in recording details | Send cached transcript to a selected Codex task |
+| `R` in recording details/Outbox | Retry processing or request upload |
+| `A` in Outbox | Retry all failed gateway jobs for this Cardputer |
 | Up/Down key positions (`;` / `.`) | Select a recording |
 | `Enter` | Play the selected recording |
 | `Enter` during playback | Pause or resume playback |
@@ -91,28 +171,92 @@ platformio test -e native-tests
 | Long `G0` press | Open settings |
 | Left/Right key positions (`,` / `/`) | Change a setting value |
 | `Esc` in settings | Save settings or return from a submenu |
+| `S` in Settings / Network | Scan visible Wi-Fi networks |
+| Up/Down in Wi-Fi scan | Select a visible network |
+| `Enter` in Wi-Fi scan | Connect, or enter the selected network password |
 | `Enter` in rename | Save the new name |
 | `Delete` in rename | Remove the last character |
 | `Esc` in rename | Cancel rename |
 | Left/Right in help | Change help page |
 | `Enter` or `Esc` in help | Close help |
 
-## Settings
+## SD-card configuration
 
-Settings are saved on the device and restored after reboot. Brightness is
+All persistent configuration is portable with the card:
+
+- `/RECORDER.CFG`: brightness, screen modes, low-battery save, seeking, wake
+  behavior, library sorting, and Codex/transcript font sizes. The firmware
+  creates it on first boot and updates it from the UI.
+- `/AGENT.CFG`: Wi-Fi credentials, HTTPS gateway/discovery settings, device
+  identity/token, and ordered voice-processing profiles.
+- `/AGENT_WIFI.CFG`: extra Wi-Fi networks added from the scan screen. It is
+  written only after a successful connection and may be edited or deleted on
+  another computer.
+- `/AGENT_CA.PEM`: trusted CA for the user's HTTPS gateway. Public firmware has
+  no developer-specific trust anchor; legacy `/VOICE_CA.PEM` remains supported.
+- `/VOICEAGENT.SENT`: automatically maintained upload-delivery ledger.
+- `/*.ROUTE`: per-recording destination, processing profile, and Codex thread
+  id. These files are created and maintained automatically.
+- `/*.AGENT.JSON`: durable voice-job ID, stage, progress, attempts, error,
+  Obsidian/Codex results, and transcript for the details screen.
+
+Legacy `/VOICEAGENT.CFG` and `/VOICE_CA.PEM` names remain supported.
+
+Before the first HTTPS request, Agent Console synchronizes its clock over NTP.
+This is required for certificate validity checks; the Network/Codex status will
+show `TLS CLOCK NOT SET` if the connected network cannot provide Internet/NTP.
+
+Open **Settings → Services** to run an authenticated end-to-end check. The
+screen reports Gateway, Whisper, Codex, transcript editor, and the number of
+recordings still queued on SD. Press Enter to refresh.
+
+Fallback networks use numbered keys: `wifi_ssid_2`/`wifi_password_2` through
+`wifi_ssid_5`/`wifi_password_5`. The unnumbered pair remains profile 1.
+Agent Console can hold up to five additional networks saved from the scan
+screen. Quoted SSIDs and passwords are supported in both configuration files.
+
+Set `gateway_base_url=auto` to discover `_cardputer-agent._tcp` on the current
+LAN. Keep `gateway_fallback_url=https://…` for networks where multicast DNS is
+blocked. Certificate validation remains mandatory, so the gateway certificate
+must cover the discovered address.
+
+`voice_profile` through `voice_profile_6` define the order cycled by `P`.
+Built-in profiles are `default`, `meeting`, `idea`, and `task`; they write to
+the configured Cardputer inbox and its `Meetings`, `Ideas`, or `Tasks`
+subfolder.
+
+Provider secrets such as an OpenAI, Claude, or Hermes gateway key stay on the
+gateway computer and are never copied to the Cardputer. Templates are in
+[`firmware/sdcard/`](firmware/sdcard/).
+
+The Obsidian Vault is a gateway setting, not a firmware constant. Run
+`python3 gateway/scripts/configure.py` to select a detected Vault or enter any
+writable absolute path. The generated `gateway/.env` is private and ignored by
+Git; `OBSIDIAN_NOTES_FOLDER` controls the destination inside that Vault.
+
+## Recorder settings
+
+Settings are saved to `/RECORDER.CFG` and restored after reboot. Brightness is
 applied immediately. Screen saver options are grouped under `Screen Saver`:
 
 | Setting | Values |
 | --- | --- |
 | Brightness | 10% through 100%, in 10% steps |
+| Network | Profile, SSID, IP, last disconnect reason and last scan result; `S` scans and Enter retries |
+| Compact Audio | 16 kHz standard, 8 kHz low-bandwidth PCM |
+| Reading / Codex Chat | 1x, 2x |
+| Reading / Transcripts | 1x, 2x |
+| Library Sort | Newest, Oldest, Status, A-Z |
 | Low Battery Save | Off, 1%, 5%, 10% |
 | Seek Step | 5 sec, 10 sec, 20 sec, 60 sec |
 | Reset to Default | Restores saved settings after confirmation |
 | Version | Current firmware version |
+| Help | Opens the complete ten-page on-device control reference |
 | Screen Saver / When Home | Off, Dimmed Standby, Black |
 | Screen Saver / While Recording | Off, Dimmed Standby, Black |
 | Screen Saver / While Playing | Off, Dimmed Standby, Black |
 | Screen Saver / Triple-Press Wake | Off, On |
+| Screen Saver / Visual Style | Cyber Grid, Data Rain |
 
 `Low Battery Save` defaults to `10%`. When it is enabled and battery data is
 valid, recording stops through the normal save path once the battery reaches
@@ -124,6 +268,10 @@ press wakes the screen and is not used as a stop, delete, or volume command.
 When `Triple-Press Wake` is on, the same key must be pressed three times to
 wake from `Dimmed Standby` or `Black`.
 
+`Visual Style` chooses between the original neon city and perspective grid or
+the animated green Data Rain. Both are generated procedurally and continue to
+show recording/playback state without loading image assets from the SD card.
+
 `Reset to Default` asks for confirmation before restoring brightness, screen
 saver, triple-press wake, low battery save, and seek step to their defaults.
 
@@ -133,10 +281,16 @@ rate, so pitch changes with speed.
 
 ## File management
 
-The library sorts recordings by filename descending so newer default names are
-near the top. Locked recordings show `*` before the filename and cannot be
-deleted until unlocked. Lock state is stored on the card in `RECORDER.LCK`;
-if the file is missing or damaged, recordings remain usable.
+Press `S` in the library or use `Settings → Library Sort` to order recordings
+by newest/oldest SD timestamp, processing status, or filename. Status
+sorting puts failed and active jobs ahead of queued, delivered, and completed
+transcripts. When an SD timestamp is unavailable, filename order is used as a
+stable fallback. The selected mode is stored in `RECORDER.CFG` and restored
+after reboot.
+
+Locked recordings show `*` before the filename and cannot be deleted until
+unlocked. Lock state is stored on the card in `RECORDER.LCK`; if the file is
+missing or damaged, recordings remain usable.
 
 Rename keeps the `.WAV` suffix automatically. Names are converted to uppercase
 and accept letters, numbers, spaces, `_`, and `-`. Existing files are never
@@ -144,8 +298,11 @@ overwritten.
 
 ## Audio format
 
-New recordings use 16 kHz mono 16-bit PCM. Playback accepts mono 16-bit PCM
-WAV files and walks RIFF chunks instead of requiring audio to begin at byte 44.
+New recordings use 16 kHz mono 16-bit PCM by default. Compact Audio uses 8 kHz
+mono 16-bit PCM, cutting size and upload time in half while remaining a normal
+WAV; switch back to 16 kHz when recognition quality matters more than
+bandwidth. Playback accepts mono 16-bit PCM WAV files and walks RIFF chunks
+instead of requiring audio to begin at byte 44.
 
 See [audio and storage notes](docs/audio-and-storage.md),
 [troubleshooting](docs/troubleshooting.md), and the

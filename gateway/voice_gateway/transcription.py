@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+from .config import Settings
+
+
+class Transcriber:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self._whisper_model: Any | None = None
+        self._whisper_lock = asyncio.Lock()
+
+    async def transcribe(self, wav_path: Path, original_filename: str) -> str:
+        provider = self.settings.transcription_provider
+        if provider == "mock":
+            return f"Test transcription for {original_filename}."
+        if provider == "openai":
+            return await self._openai(wav_path, original_filename)
+        if provider == "faster-whisper":
+            return await self._faster_whisper(wav_path)
+        if provider == "whisper-server":
+            return await self._whisper_server(wav_path, original_filename)
+        raise RuntimeError(f"Unsupported transcription provider: {provider}")
+
+    async def status(self) -> dict[str, str]:
+        provider = self.settings.transcription_provider
+        if provider == "whisper-server":
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    response = await client.get(
+                        f"{self.settings.whisper_server_url}/v1/models"
+                    )
+                response.raise_for_status()
+                model_ids = {
+                    str(item.get("id", ""))
+                    for item in response.json().get("data", [])
+                }
+                configured = self.settings.whisper_server_model
+                if configured not in model_ids:
+                    return {
+                        "status": "error",
+                        "provider": provider,
+                        "detail": f"model unavailable: {configured}",
+                    }
+                return {
+                    "status": "ok",
+                    "provider": provider,
+                    "detail": configured,
+                }
+            except Exception as error:
+                return {
+                    "status": "error",
+                    "provider": provider,
+                    "detail": str(error)[:160],
+                }
+        if provider == "openai":
+            ready = bool(self.settings.openai_api_key)
+            return {
+                "status": "ok" if ready else "error",
+                "provider": provider,
+                "detail": "configured" if ready else "API key missing",
+            }
+        if provider in {"mock", "faster-whisper"}:
+            return {"status": "ok", "provider": provider, "detail": "configured"}
+        return {"status": "error", "provider": provider, "detail": "unsupported"}
+
+    async def _openai(self, wav_path: Path, original_filename: str) -> str:
+        if not self.settings.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is required for OpenAI transcription")
+        async with httpx.AsyncClient(
+            timeout=self.settings.transcription_timeout_seconds
+        ) as client:
+            with wav_path.open("rb") as audio:
+                response = await client.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.openai_api_key}"
+                    },
+                    data={"model": self.settings.transcription_model},
+                    files={"file": (original_filename, audio, "audio/wav")},
+                )
+        response.raise_for_status()
+        text = response.json().get("text", "").strip()
+        if not text:
+            raise RuntimeError("Transcription provider returned empty text")
+        return text
+
+    async def _whisper_server(
+        self, wav_path: Path, original_filename: str
+    ) -> str:
+        base_url = self.settings.whisper_server_url
+        parsed = urlparse(base_url)
+        if parsed.scheme != "http" or parsed.hostname not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
+            raise RuntimeError(
+                "WHISPER_SERVER_URL must be a loopback HTTP address"
+            )
+        headers = {}
+        if self.settings.whisper_server_api_key:
+            headers["Authorization"] = (
+                f"Bearer {self.settings.whisper_server_api_key}"
+            )
+        async with httpx.AsyncClient(
+            timeout=self.settings.transcription_timeout_seconds
+        ) as client:
+            with wav_path.open("rb") as audio:
+                request_data = {"model": self.settings.whisper_server_model}
+                if self.settings.whisper_server_language:
+                    request_data["language"] = (
+                        self.settings.whisper_server_language
+                    )
+                response = await client.post(
+                    f"{base_url}/v1/audio/transcriptions",
+                    headers=headers,
+                    data=request_data,
+                    files={"file": (original_filename, audio, "audio/wav")},
+                )
+        response.raise_for_status()
+        text = response.json().get("text", "").strip()
+        if not text:
+            raise RuntimeError("Local Whisper server returned empty text")
+        return text
+
+    async def _faster_whisper(self, wav_path: Path) -> str:
+        # Decoding is CPU-bound. Keep it away from FastAPI's event loop and
+        # serialize requests so one compact Mac does not load several models.
+        async with self._whisper_lock:
+            return await asyncio.to_thread(self._transcribe_local, wav_path)
+
+    def _transcribe_local(self, wav_path: Path) -> str:
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as error:
+            raise RuntimeError(
+                "Install the gateway's local-whisper extra for faster-whisper"
+            ) from error
+        if self._whisper_model is None:
+            self._whisper_model = WhisperModel(
+                self.settings.whisper_model,
+                device="cpu",
+                compute_type="int8",
+            )
+        segments, _ = self._whisper_model.transcribe(
+            str(wav_path),
+            vad_filter=True,
+            beam_size=5,
+        )
+        text = " ".join(segment.text.strip() for segment in segments).strip()
+        if not text:
+            raise RuntimeError("Local transcription returned empty text")
+        return text

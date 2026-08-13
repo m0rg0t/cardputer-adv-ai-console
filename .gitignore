@@ -1,7 +1,27 @@
-.pio/
-.platformio/
-.venv/
+**/.pio/
+**/.platformio/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+
+# Local settings and credentials. Only *.example files are public.
+.env
+gateway/.env
+gateway/certs/
+gateway/data/
+firmware/sdcard/AGENT.CFG
+firmware/sdcard/AGENT_WIFI.CFG
+firmware/sdcard/AGENT_CA.PEM
+site/.openai/hosting.json
+
+# Developer output and private device data.
 dist/
+backups/
+third_party/
+*.bin
+!release/firmware/*.bin
+!site/public/downloads/*.bin
 .vscode/*
 !.vscode/extensions.json
 .DS_Store
@@ -10,3 +30,5 @@ dist/
 *.log
 *.wav
 *.WAV
+*.mp3
+*.sqlite3

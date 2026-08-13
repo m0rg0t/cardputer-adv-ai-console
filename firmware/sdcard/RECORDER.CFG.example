@@ -1,0 +1,15 @@
+# Portable recorder settings. The firmware creates RECORDER.CFG automatically.
+# Screen modes: 0=off, 1=dimmed standby, 2=black.
+brightness_percent=70
+screen_home=1
+screen_recording=1
+screen_playback=1
+# Screen saver visual style: 0=Cyber Grid, 1=Data Rain.
+screen_style=0
+low_battery_save_percent=10
+seek_step_seconds=5
+compact_audio=false
+vad_enabled=false
+triple_press_wake=false
+# Library sort: 0=newest, 1=oldest, 2=status, 3=name.
+library_sort=0

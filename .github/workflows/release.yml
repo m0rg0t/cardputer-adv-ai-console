@@ -20,14 +20,18 @@ jobs:
         run: pip install platformio==6.1.19
       - name: Build and test
         run: |
-          platformio run -e cardputer-adv-recorder
-          platformio test -e native-tests
+          platformio run -d firmware -e cardputer-adv-recorder
+          platformio test -d firmware -e native-tests
+          pip install uv
+          cd gateway
+          uv run --extra dev pytest
+          cd ..
       - name: Package firmware
-        run: scripts/package-release.sh "${GITHUB_REF_NAME}"
+        run: firmware/scripts/package-release.sh "${GITHUB_REF_NAME}"
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            dist/cardputer-adv-recorder-${{ github.ref_name }}.bin
-            dist/SHA256SUMS.txt
+            release/firmware/Cardputer-ADV-Agent-Console-${{ github.ref_name }}-M5Apps.bin
+            release/firmware/SHA256SUMS.txt

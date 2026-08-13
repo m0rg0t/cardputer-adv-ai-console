@@ -1,0 +1,19 @@
+[project]
+name = "cardputer-voice-gateway"
+version = "0.2.0"
+description = "Authenticated Cardputer notes, transcription, and Codex gateway"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.1,<2"]
+local-whisper = ["faster-whisper>=1.2,<2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"

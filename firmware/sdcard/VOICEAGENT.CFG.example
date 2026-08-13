@@ -1,0 +1,8 @@
+# Legacy compatibility template. New installations should use AGENT.CFG.example.
+wifi_ssid=YOUR_WIFI_NAME
+wifi_password=YOUR_WIFI_PASSWORD
+wifi_ssid_2=YOUR_PHONE_HOTSPOT_NAME
+wifi_password_2=YOUR_PHONE_HOTSPOT_PASSWORD
+gateway_base_url=https://agent.example.com
+device_token=replace-with-the-same-long-random-token-as-the-gateway
+device_name=anton-cardputer

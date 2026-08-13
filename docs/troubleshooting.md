@@ -25,9 +25,9 @@ Recordings made by this firmware use the supported format.
 ## Build problems
 
 Use PlatformIO Core 6.1.19 and keep the dependency versions from
-`platformio.ini`. For a clean rebuild:
+`firmware/platformio.ini`. For a clean rebuild:
 
 ```sh
-platformio run -e cardputer-adv-recorder --target clean
-platformio run -e cardputer-adv-recorder
+platformio run -d firmware -e cardputer-adv-recorder --target clean
+platformio run -d firmware -e cardputer-adv-recorder
 ```

@@ -3,6 +3,11 @@
 - Cold boot and record a short clip immediately.
 - Stop and confirm the file appears in the library.
 - Confirm the library shows SD free space and selected-file size/duration.
+- Press `S` and verify Newest, Oldest, Status, and A-Z sorting while the
+  selected recording remains selected.
+- Reboot and confirm the selected library sort mode is restored from SD.
+- With Status sorting active, confirm a failed job moves ahead of queued,
+  delivered, and completed recordings when its state changes.
 - Open help with `H`, page through it, and return with `Enter` or `Esc`.
 - Confirm Help shows only the simplified Library, Manage, Recording,
   Playback, and System pages.
@@ -38,7 +43,11 @@
 - Confirm `Reset to Default` asks for confirmation before resetting settings.
 - Confirm settings shows the current firmware version.
 - Enter `Screen Saver` settings and verify `When Home`, `While Recording`,
-  `While Playing`, and `Triple-Press Wake` can be set independently.
+  `While Playing`, `Triple-Press Wake`, and `Visual Style` can be set
+  independently.
+- Verify Cyber Grid and Data Rain animate in idle mode and retain readable
+  recording, playback, battery, and wake-confirmation overlays.
+- Reboot and confirm the selected visual style is restored from SD.
 - Verify `Dimmed Standby` and `Black` during recording do not interrupt
   recording.
 - Verify `Dimmed Standby` and `Black` during playback do not interrupt

@@ -1,0 +1,21 @@
+# Copy to the microSD root as AGENT.CFG.
+# Secrets for OpenAI/Codex stay on the gateway; this is a revocable device token.
+wifi_ssid=YOUR_WIFI_NAME
+wifi_password=YOUR_WIFI_PASSWORD
+# Optional fallback networks are tried in numerical order (up to profile 5).
+wifi_ssid_2=YOUR_PHONE_HOTSPOT_NAME
+wifi_password_2=YOUR_PHONE_HOTSPOT_PASSWORD
+# wifi_ssid_3=ANOTHER_WIFI_NAME
+# wifi_password_3=ANOTHER_WIFI_PASSWORD
+# Use an explicit verified HTTPS URL, or `auto` for local Bonjour discovery.
+gateway_base_url=https://agent.example.com
+# gateway_base_url=auto
+# gateway_fallback_url=https://192.168.1.10:8765
+# gateway_discovery_scheme=https
+device_token=replace-with-the-same-long-random-token-as-the-gateway
+device_name=anton-cardputer
+# Ordered note-processing profiles. P cycles them before recording.
+voice_profile=default
+voice_profile_2=meeting
+voice_profile_3=idea
+voice_profile_4=task
