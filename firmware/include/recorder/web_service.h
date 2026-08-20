@@ -44,8 +44,11 @@ private:
     void handleSettingsGet(WiFiClient& client);
     void handleSettingsPost(WiFiClient& client, const String& body);
     void handleRecordings(WiFiClient& client);
+    void handleRecordingRename(WiFiClient& client, const String& body);
+    void handleRecordingDelete(WiFiClient& client, const String& body);
     void handleRecordingDownload(WiFiClient& client, const String& name);
     bool safeRecordingName(const String& name) const;
+    bool normalizeRecordingName(const String& input, String& name) const;
 
     StorageService* storage_ = nullptr;
     UploadService* uploader_ = nullptr;

@@ -9,7 +9,7 @@ namespace {
 constexpr const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Cardputer Recorder</title><style>
-:root{color-scheme:dark;--bg:#0b1020;--card:#151c31;--line:#29334e;--accent:#6be6c1;--muted:#9ba8c7}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f7ff;font:15px system-ui,sans-serif}main{width:min(920px,calc(100% - 28px));margin:28px auto}h1{font-size:26px;margin:0}h2{font-size:17px;margin:0 0 14px}.lead{color:var(--muted);margin:6px 0 22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:17px;margin-bottom:14px}.metric{font-size:21px;color:var(--accent);margin-top:4px}.muted,small{color:var(--muted)}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-top:1px solid var(--line);padding:11px 7px}th{color:var(--muted);font-weight:500}a{color:var(--accent)}button{border:0;border-radius:9px;background:var(--accent);color:#061711;padding:10px 16px;font-weight:700;cursor:pointer}label{display:grid;gap:6px;color:var(--muted)}input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:#0d1427;color:#fff}.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:13px}.actions{display:flex;align-items:center;gap:12px;margin-top:15px}audio{width:180px;height:34px}@media(max-width:600px){audio{width:125px}.optional{display:none}th,td{padding:10px 4px}}
+:root{color-scheme:dark;--bg:#0b1020;--card:#151c31;--line:#29334e;--accent:#6be6c1;--muted:#9ba8c7;--danger:#ff7885}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f7ff;font:15px system-ui,sans-serif}main{width:min(920px,calc(100% - 28px));margin:28px auto}h1{font-size:26px;margin:0}h2{font-size:17px;margin:0 0 14px}.lead{color:var(--muted);margin:6px 0 22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:17px;margin-bottom:14px}.metric{font-size:21px;color:var(--accent);margin-top:4px}.muted,small{color:var(--muted)}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-top:1px solid var(--line);padding:11px 7px}th{color:var(--muted);font-weight:500}a{color:var(--accent)}button{border:0;border-radius:9px;background:var(--accent);color:#061711;padding:10px 16px;font-weight:700;cursor:pointer}button:disabled{cursor:wait;opacity:.55}.file-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;white-space:nowrap}.file-action{width:34px;height:34px;padding:0;border:1px solid var(--line);background:#0d1427;color:var(--accent);font-size:17px}.file-action.danger{color:var(--danger)}label{display:grid;gap:6px;color:var(--muted)}input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:#0d1427;color:#fff}.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:13px}.actions{display:flex;align-items:center;gap:12px;margin-top:15px}audio{width:180px;height:34px}@media(max-width:600px){audio{width:125px}.optional{display:none}th,td{padding:10px 4px}.file-actions{flex-wrap:wrap}}
 </style></head><body><main><h1>Cardputer Recorder</h1><p class="lead" id="address">Локальная панель устройства</p>
 <section class="grid"><div class="card"><div class="muted">Состояние</div><div class="metric" id="mode">…</div></div><div class="card"><div class="muted">Wi-Fi</div><div class="metric" id="wifi">…</div><small id="ip"></small></div><div class="card"><div class="muted">microSD</div><div class="metric" id="storage">…</div></div><div class="card"><div class="muted">Батарея</div><div class="metric" id="battery">…</div></div></section>
 <section class="card"><h2>Аудиофайлы</h2><div id="recordings" class="muted">Загрузка…</div></section>
@@ -19,7 +19,8 @@ const $=s=>document.querySelector(s), esc=s=>String(s).replace(/[&<>"']/g,c=>({'
 async function json(url,options){const r=await fetch(url,options);const x=await r.json();if(!r.ok)throw Error(x.error||r.statusText);return x}
 function bytes(n){for(const u of ['B','KB','MB','GB']){if(n<1024||u==='GB')return (n<10&&u!=='B'?n.toFixed(1):Math.round(n))+' '+u;n/=1024}}
 async function status(){try{const x=await json('/api/status');$('#mode').textContent=x.mode;$('#wifi').textContent=x.wifi.connected?x.wifi.ssid:'Не подключён';$('#ip').textContent=x.wifi.ip||'';$('#storage').textContent=x.storage.mounted?bytes(x.storage.used)+' / '+bytes(x.storage.capacity):'Нет карты';$('#battery').textContent=x.battery.valid?x.battery.percent+'%':'—';$('#address').textContent=x.web.address}catch(e){$('#mode').textContent='Недоступен'}}
-async function recordings(){try{const x=await json('/api/recordings');if(!x.items.length){$('#recordings').textContent='Записей пока нет';return}$('#recordings').innerHTML='<table><thead><tr><th>Имя</th><th class="optional">Размер</th><th>Прослушать</th><th></th></tr></thead><tbody>'+x.items.map(f=>{const q=encodeURIComponent(f.name),u='/api/recordings/download?name='+q;return `<tr><td>${esc(f.name)}<br><small>${esc(f.status)}</small></td><td class="optional">${bytes(f.size)}</td><td><audio controls preload="none" src="${u}"></audio></td><td><a href="${u}" download>Скачать</a></td></tr>`}).join('')+'</tbody></table>'}catch(e){$('#recordings').textContent=e.message}}
+async function recordings(){try{const x=await json('/api/recordings');if(!x.items.length){$('#recordings').textContent='Записей пока нет';return}$('#recordings').innerHTML='<table><thead><tr><th>Имя</th><th class="optional">Размер</th><th>Прослушать</th><th aria-label="Действия"></th></tr></thead><tbody>'+x.items.map(f=>{const q=encodeURIComponent(f.name),u='/api/recordings/download?name='+q,n=esc(f.name);return `<tr><td>${n}<br><small>${esc(f.status)}</small></td><td class="optional">${bytes(f.size)}</td><td><audio controls preload="none" src="${u}"></audio></td><td><div class="file-actions"><a href="${u}" download title="Скачать ${n}" aria-label="Скачать ${n}">&#8681;</a><button class="file-action" data-action="rename" data-name="${n}" title="Переименовать ${n}" aria-label="Переименовать ${n}">&#9998;</button><button class="file-action danger" data-action="delete" data-name="${n}" title="Удалить ${n}" aria-label="Удалить ${n}">&#128465;</button></div></td></tr>`}).join('')+'</tbody></table>'}catch(e){$('#recordings').textContent=e.message}}
+$('#recordings').addEventListener('click',async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const name=b.dataset.name;if(b.dataset.action==='rename'){const base=name.replace(/\.wav$/i,''),next=prompt('Новое имя файла',base);if(next===null||next.trim()===base)return;b.disabled=true;try{await json('/api/recordings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,new_name:next})});await recordings()}catch(error){alert(error.message);b.disabled=false}}else{if(!confirm(`Удалить «${name}»? Это действие нельзя отменить.`))return;b.disabled=true;try{await json('/api/recordings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await recordings()}catch(error){alert(error.message);b.disabled=false}}});
 async function settings(){const x=await json('/api/settings'),f=$('#settings');for(const [k,v] of Object.entries(x))if(f.elements[k])f.elements[k].value=String(v)}
 $('#settings').addEventListener('submit',async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));$('#saved').textContent='Сохраняю…';try{const x=await json('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});$('#saved').textContent='Сохранено';if(x.address)$('#address').textContent=x.address;setTimeout(()=>location.hostname.endsWith('.local')&&x.address?location.href=x.address:location.reload(),700)}catch(e){$('#saved').textContent=e.message}});
 status();recordings();settings().catch(e=>$('#saved').textContent=e.message);setInterval(status,5000);
@@ -30,6 +31,14 @@ bool isWav(const String& name)
     String lower = name;
     lower.toLowerCase();
     return lower.endsWith(".wav");
+}
+
+String recordingSidecarPath(const String& filename, const char* suffix)
+{
+    String path = "/" + filename;
+    path.remove(path.length() - 4);
+    path += suffix;
+    return path;
 }
 
 constexpr std::uint16_t kMdnsPort = 5353;
@@ -144,6 +153,8 @@ const char* statusText(int status)
             return "OK";
         case 400:
             return "Bad Request";
+        case 409:
+            return "Conflict";
         case 404:
             return "Not Found";
         case 405:
@@ -395,6 +406,10 @@ void WebService::handleClient(WiFiClient& client)
         handleSettingsPost(client, body);
     } else if (method == "GET" && target == "/api/recordings") {
         handleRecordings(client);
+    } else if (method == "PATCH" && target == "/api/recordings") {
+        handleRecordingRename(client, body);
+    } else if (method == "DELETE" && target == "/api/recordings") {
+        handleRecordingDelete(client, body);
     } else if (method == "GET" &&
                target.startsWith("/api/recordings/download?name=")) {
         handleRecordingDownload(
@@ -583,6 +598,130 @@ void WebService::handleRecordingDownload(WiFiClient& client,
     file.close();
 }
 
+void WebService::handleRecordingRename(WiFiClient& client,
+                                       const String& body)
+{
+    if (!fileIoAllowed_) {
+        sendError(client, 503, "Аудиохранилище временно занято");
+        return;
+    }
+    if (storage_ == nullptr || !storage_->isMounted()) {
+        sendError(client, 503, "microSD is not mounted");
+        return;
+    }
+    JsonDocument request;
+    if (deserializeJson(request, body) || !request.is<JsonObject>()) {
+        sendError(client, 400, "Invalid JSON request");
+        return;
+    }
+    const String oldName = request["name"] | "";
+    String newName;
+    if (!safeRecordingName(oldName) ||
+        !normalizeRecordingName(request["new_name"] | "", newName)) {
+        sendError(client, 400,
+                  "Имя: до 32 символов A-Z, 0-9, пробел, - или _");
+        return;
+    }
+    const String oldPath = "/" + oldName;
+    const String newPath = "/" + newName;
+    if (!storage_->exists(oldPath.c_str())) {
+        sendError(client, 404, "Recording not found");
+        return;
+    }
+    if (oldName == newName) {
+        JsonDocument response;
+        response["ok"] = true;
+        response["name"] = newName;
+        sendJson(client, response);
+        return;
+    }
+    if (storage_->exists(newPath.c_str())) {
+        sendError(client, 409, "Файл с таким именем уже существует");
+        return;
+    }
+    const String oldRoute = recordingSidecarPath(oldName, ".ROUTE");
+    const String newRoute = recordingSidecarPath(newName, ".ROUTE");
+    const String oldMetadata =
+        recordingSidecarPath(oldName, ".AGENT.JSON");
+    const String newMetadata =
+        recordingSidecarPath(newName, ".AGENT.JSON");
+    const bool hasRoute = storage_->exists(oldRoute.c_str());
+    const bool hasMetadata = storage_->exists(oldMetadata.c_str());
+    if ((hasRoute && storage_->exists(newRoute.c_str())) ||
+        (hasMetadata && storage_->exists(newMetadata.c_str()))) {
+        sendError(client, 409,
+                  "Служебные данные для нового имени уже существуют");
+        return;
+    }
+    if (!storage_->rename(oldPath.c_str(), newPath.c_str())) {
+        sendError(client, 500, "Could not rename recording");
+        return;
+    }
+    if (hasRoute &&
+        !storage_->rename(oldRoute.c_str(), newRoute.c_str())) {
+        storage_->rename(newPath.c_str(), oldPath.c_str());
+        sendError(client, 500, "Could not rename recording route");
+        return;
+    }
+    if (hasMetadata &&
+        !storage_->rename(oldMetadata.c_str(), newMetadata.c_str())) {
+        if (hasRoute) {
+            storage_->rename(newRoute.c_str(), oldRoute.c_str());
+        }
+        storage_->rename(newPath.c_str(), oldPath.c_str());
+        sendError(client, 500, "Could not rename recording metadata");
+        return;
+    }
+    JsonDocument response;
+    response["ok"] = true;
+    response["name"] = newName;
+    sendJson(client, response);
+}
+
+void WebService::handleRecordingDelete(WiFiClient& client,
+                                       const String& body)
+{
+    if (!fileIoAllowed_) {
+        sendError(client, 503, "Аудиохранилище временно занято");
+        return;
+    }
+    if (storage_ == nullptr || !storage_->isMounted()) {
+        sendError(client, 503, "microSD is not mounted");
+        return;
+    }
+    JsonDocument request;
+    if (deserializeJson(request, body) || !request.is<JsonObject>()) {
+        sendError(client, 400, "Invalid JSON request");
+        return;
+    }
+    const String name = request["name"] | "";
+    if (!safeRecordingName(name)) {
+        sendError(client, 400, "Invalid recording name");
+        return;
+    }
+    const String path = "/" + name;
+    if (!storage_->exists(path.c_str())) {
+        sendError(client, 404, "Recording not found");
+        return;
+    }
+    if (!storage_->remove(path.c_str())) {
+        sendError(client, 500, "Could not delete recording");
+        return;
+    }
+    const String route = recordingSidecarPath(name, ".ROUTE");
+    const String metadata = recordingSidecarPath(name, ".AGENT.JSON");
+    if (storage_->exists(route.c_str()) && !storage_->remove(route.c_str())) {
+        Serial.println("[WEB] Could not delete recording route sidecar");
+    }
+    if (storage_->exists(metadata.c_str()) &&
+        !storage_->remove(metadata.c_str())) {
+        Serial.println("[WEB] Could not delete recording metadata sidecar");
+    }
+    JsonDocument response;
+    response["ok"] = true;
+    sendJson(client, response);
+}
+
 bool WebService::safeRecordingName(const String& name) const
 {
     if (name.length() == 0 || name.length() > 96 || !isWav(name) ||
@@ -591,6 +730,34 @@ bool WebService::safeRecordingName(const String& name) const
         name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0) {
         return false;
     }
+    return true;
+}
+
+bool WebService::normalizeRecordingName(const String& input,
+                                        String& name) const
+{
+    name = input;
+    name.trim();
+    String lower = name;
+    lower.toLowerCase();
+    if (lower.endsWith(".wav")) {
+        name.remove(name.length() - 4);
+        name.trim();
+    }
+    if (name.length() == 0 || name.length() > 32) {
+        return false;
+    }
+    for (std::size_t index = 0; index < name.length(); ++index) {
+        const char character = name[index];
+        if (!((character >= 'A' && character <= 'Z') ||
+              (character >= 'a' && character <= 'z') ||
+              (character >= '0' && character <= '9') ||
+              character == '-' || character == '_' || character == ' ')) {
+            return false;
+        }
+    }
+    name.toUpperCase();
+    name += ".WAV";
     return true;
 }
 
