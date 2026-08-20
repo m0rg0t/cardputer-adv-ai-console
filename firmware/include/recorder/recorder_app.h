@@ -14,6 +14,7 @@
 #include "recorder/input.h"
 #include "recorder/media/wav_file.h"
 #include "recorder/upload_service.h"
+#include "recorder/web_service.h"
 
 namespace cardputer_recorder {
 
@@ -62,6 +63,8 @@ private:
         std::uint8_t codexTextScale = 1;
         std::uint8_t transcriptTextScale = 1;
         LibrarySortMode librarySortMode = LibrarySortMode::kNewest;
+        bool webEnabled = true;
+        String webHostname = "recorder";
     };
 
     enum class ScreenSaverState : std::uint8_t {
@@ -136,6 +139,10 @@ private:
     void resetSettingsToDefault();
     void loadSettings();
     void saveSettings();
+    void writeWebStatus(JsonObject object) const;
+    void writeWebSettings(JsonObject object) const;
+    bool applyWebSettings(JsonObjectConst object, String& error);
+    String webStateText() const;
     void applyBrightness();
     String settingValueText(std::uint8_t index) const;
     bool anyInput(const InputEvent& event) const;
@@ -194,6 +201,7 @@ private:
     WavWriter writer_;
     WavReader reader_;
     UploadService uploader_;
+    WebService web_;
     State state_ = State::kBrowsing;
     Settings settings_;
     std::uint8_t selectedSetting_ = 0;

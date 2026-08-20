@@ -21,6 +21,8 @@ class Settings:
     whisper_server_model: str = "medium-q5_0"
     whisper_server_language: str = "ru"
     whisper_server_api_key: str = ""
+    whisper_server_chunk_seconds: int = 600
+    whisper_server_chunk_retries: int = 2
     transcription_timeout_seconds: int = 1800
     agent_base_url: str = ""
     agent_api_key: str = ""
@@ -81,6 +83,12 @@ class Settings:
             whisper_server_model=os.environ.get("WHISPER_SERVER_MODEL", "medium-q5_0"),
             whisper_server_language=os.environ.get("WHISPER_SERVER_LANGUAGE", "ru"),
             whisper_server_api_key=os.environ.get("WHISPER_SERVER_API_KEY", ""),
+            whisper_server_chunk_seconds=max(
+                60, int(os.environ.get("WHISPER_SERVER_CHUNK_SECONDS", "600"))
+            ),
+            whisper_server_chunk_retries=max(
+                0, int(os.environ.get("WHISPER_SERVER_CHUNK_RETRIES", "2"))
+            ),
             transcription_timeout_seconds=int(
                 os.environ.get("TRANSCRIPTION_TIMEOUT_SECONDS", "1800")
             ),

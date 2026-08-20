@@ -15,3 +15,9 @@ Releases. Never flash this image at address `0x0000`.
 
 Copy and edit the examples in `sdcard/` to configure Wi-Fi and the gateway.
 Real credentials and device-generated files are intentionally ignored by Git.
+
+After Wi-Fi connects, the local administration panel is available at
+`http://recorder.local/`. It shows connection/device status and recordings,
+allows WAV playback or download, and edits common recorder settings. Set
+`web_hostname` in `/RECORDER.CFG` to change the `.local` name; use the IP shown
+under **Settings → Network** when the LAN does not support mDNS.

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add a compact same-LAN recorder panel at `recorder.local` with live device,
+  Wi-Fi, battery, and microSD status, WAV playback/download, and persistent
+  recorder settings.
+- Show live WAV upload percentage and a full-width progress bar in the device
+  header while a background transfer is active.
+- Split long local-Whisper WAV transcriptions into ordered 10-minute requests,
+  retry transiently failed chunks, and remove temporary audio after processing.
+- Track the current M5Apps `0x170000` app partition in release-size checks;
+  older project checks still assumed `0x160000`.
 - Add compact and full wrapped Codex task-name modes, persisted under Reading
   settings.
 - Add a one-key flow that creates a local Codex task and records its first

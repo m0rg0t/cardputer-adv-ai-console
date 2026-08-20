@@ -12,6 +12,7 @@ from voice_gateway.app import create_app
 from voice_gateway.codex import CodexApproval, CodexJob
 from voice_gateway.config import Settings
 from voice_gateway.speech import SpeechSynthesizer
+from voice_gateway.transcription import Transcriber
 
 
 class FakeCodex:
@@ -89,6 +90,44 @@ def wav_bytes() -> bytes:
         wav.setframerate(16000)
         wav.writeframes(b"\x00\x00" * 1600)
     return output.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_whisper_server_splits_long_wav_in_order(
+    settings: Settings, tmp_path: Path
+) -> None:
+    wav_path = tmp_path / "long.wav"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(100)
+        wav.writeframes(b"\x00\x00" * 2500)
+
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "transcription_provider": "whisper-server",
+            "whisper_server_chunk_seconds": 10,
+        }
+    )
+    transcriber = Transcriber(configured)
+    seen: list[tuple[str, int]] = []
+
+    async def fake_request(client, path, filename, headers):
+        del client, headers
+        with wave.open(str(path), "rb") as chunk:
+            seen.append((filename, chunk.getnframes()))
+        return f"text {len(seen)}"
+
+    transcriber._request_whisper = fake_request  # type: ignore[method-assign]
+    text = await transcriber.transcribe(wav_path, "REC0001.WAV")
+
+    assert text == "text 1\n\ntext 2\n\ntext 3"
+    assert seen == [
+        ("REC0001.part-001.wav", 1000),
+        ("REC0001.part-002.wav", 1000),
+        ("REC0001.part-003.wav", 500),
+    ]
 
 
 @pytest.fixture

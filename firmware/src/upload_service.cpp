@@ -32,6 +32,43 @@ constexpr unsigned long kErrorRetryMs = 60000;
 constexpr unsigned long kTlsClockTimeoutMs = 10000;
 constexpr time_t kMinimumTlsTime = 1704067200;  // 2024-01-01 UTC
 
+class UploadProgressStream : public Stream {
+public:
+    UploadProgressStream(File& file,
+                         std::atomic<std::uint32_t>& bytesRead)
+        : file_(file), bytesRead_(bytesRead)
+    {
+    }
+
+    int available() override { return file_.available(); }
+
+    int read() override
+    {
+        const int value = file_.read();
+        if (value >= 0) {
+            bytesRead_.fetch_add(1, std::memory_order_relaxed);
+        }
+        return value;
+    }
+
+    int peek() override { return file_.peek(); }
+    void flush() override { file_.flush(); }
+    std::size_t write(std::uint8_t) override { return 0; }
+
+    std::size_t readBytes(char* buffer, std::size_t length) override
+    {
+        const std::size_t count = file_.read(
+            reinterpret_cast<std::uint8_t*>(buffer), length);
+        bytesRead_.fetch_add(static_cast<std::uint32_t>(count),
+                             std::memory_order_relaxed);
+        return count;
+    }
+
+private:
+    File& file_;
+    std::atomic<std::uint32_t>& bytesRead_;
+};
+
 bool isSuccessStatus(int status)
 {
     return (status >= 200 && status < 300) || status == 409;
@@ -245,6 +282,8 @@ bool UploadService::startBackgroundUpload(const String& path,
     backgroundUploadPath_ = path;
     backgroundUploadName_ = name;
     backgroundUploadSize_ = size;
+    backgroundUploadBytesSent_.store(0, std::memory_order_relaxed);
+    backgroundUploadBytesTotal_.store(size, std::memory_order_relaxed);
     activeUploadName_ = name;
     status_ = Status::kUploading;
     TaskHandle_t task = nullptr;
@@ -296,6 +335,8 @@ void UploadService::backgroundUpload()
     backgroundUploadName_ = "";
     backgroundUploadSize_ = 0;
     backgroundUploadActive_.store(false, std::memory_order_release);
+    backgroundUploadBytesSent_.store(0, std::memory_order_relaxed);
+    backgroundUploadBytesTotal_.store(0, std::memory_order_relaxed);
     vTaskDelete(nullptr);
 }
 
@@ -345,6 +386,27 @@ bool UploadService::wifiConnected() const
 bool UploadService::transferActive() const
 {
     return backgroundUploadActive_.load(std::memory_order_acquire);
+}
+
+std::uint8_t UploadService::transferProgressPercent() const
+{
+    const std::uint32_t total = transferBytesTotal();
+    if (total == 0) {
+        return 0;
+    }
+    const std::uint32_t sent = min(transferBytesSent(), total);
+    return static_cast<std::uint8_t>(
+        (static_cast<std::uint64_t>(sent) * 100U) / total);
+}
+
+std::uint32_t UploadService::transferBytesSent() const
+{
+    return backgroundUploadBytesSent_.load(std::memory_order_relaxed);
+}
+
+std::uint32_t UploadService::transferBytesTotal() const
+{
+    return backgroundUploadBytesTotal_.load(std::memory_order_relaxed);
 }
 
 String UploadService::wifiSsid() const
@@ -1459,7 +1521,8 @@ bool UploadService::upload(const String& path, const String& name,
     if (threadId.length() > 0) {
         http.addHeader("X-Codex-Thread-ID", threadId);
     }
-    const int status = http.sendRequest("POST", &wav, size);
+    UploadProgressStream progressStream(wav, backgroundUploadBytesSent_);
+    const int status = http.sendRequest("POST", &progressStream, size);
     const String responseBody = http.getString();
     rememberHttpResult("VOICE", status, responseBody);
     wav.close();

@@ -10,7 +10,9 @@ build_dir="${firmware_dir}/.pio/build/${environment}"
 output_dir="${repository_dir}/release/firmware"
 image_name="Cardputer-ADV-Agent-Console-${version}-M5Apps.bin"
 image_path="${output_dir}/${image_name}"
-max_m5apps_bytes=$((0x160000))
+# Current M5Apps apps_app partition. Source of truth:
+# https://github.com/d4rkmen/M5Apps/blob/main/partitions.csv
+max_m5apps_bytes=$((0x170000))
 
 firmware_bytes=$(wc -c < "${build_dir}/firmware.bin")
 if (( firmware_bytes > max_m5apps_bytes )); then

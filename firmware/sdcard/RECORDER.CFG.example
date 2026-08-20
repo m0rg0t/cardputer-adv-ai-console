@@ -15,3 +15,6 @@ triple_press_wake=false
 library_sort=0
 # Codex task names: true=full wrapped title, false=one-line list.
 codex_names_full=true
+# Local admin panel: http://<web_hostname>.local/
+web_enabled=true
+web_hostname=recorder

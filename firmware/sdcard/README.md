@@ -11,6 +11,10 @@
    `Settings → Screen Saver → Visual Style` menu.
    `codex_names_full=true` shows full wrapped Codex task names;
    switch it under `Settings → Reading → Chat Names`.
+   `web_enabled=true` enables the same-LAN administration page at
+   `http://recorder.local/`; change `web_hostname` to use another `.local`
+   name. The panel lists/downloads WAV files, shows device/network/storage
+   status, and edits common recorder settings.
    Add `wifi_ssid_2`/`wifi_password_2` through profile 5 for fallback
    networks. Agent Console tries them in numerical order, shows the active
    profile and connected SSID under `Settings → Network`, and starts over
@@ -51,3 +55,4 @@ The Network page also shows the most recent ESP32 disconnect reason. Common
 results include `NO_AP_FOUND (201)` when the SSID is not visible and
 `AUTH_FAIL (202)` when authentication fails. `RADIO: NOT SEEN` after a scan
 usually indicates a disabled hotspot, unsupported band, or insufficient signal.
+The numeric IP on this page is a fallback when a router or client blocks mDNS.

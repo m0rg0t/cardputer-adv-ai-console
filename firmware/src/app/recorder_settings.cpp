@@ -22,6 +22,33 @@ bool parseBool(const String& value, bool fallback)
     return fallback;
 }
 
+bool validWebHostname(const String& hostname)
+{
+    if (hostname.length() == 0 || hostname.length() > 32 ||
+        hostname[0] == '-' || hostname[hostname.length() - 1] == '-') {
+        return false;
+    }
+    for (std::size_t index = 0; index < hostname.length(); ++index) {
+        const char character = hostname[index];
+        if (!((character >= 'a' && character <= 'z') ||
+              (character >= '0' && character <= '9') ||
+              character == '-')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool oneOf(int value, std::initializer_list<int> choices)
+{
+    for (const int choice : choices) {
+        if (value == choice) {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 void RecorderApp::openSettings()
@@ -456,6 +483,14 @@ void RecorderApp::loadSettings()
             } else if (key == "library_sort") {
                 settings_.librarySortMode =
                     static_cast<LibrarySortMode>(value.toInt());
+            } else if (key == "web_enabled") {
+                settings_.webEnabled =
+                    parseBool(value, settings_.webEnabled);
+            } else if (key == "web_hostname") {
+                value.toLowerCase();
+                if (validWebHostname(value)) {
+                    settings_.webHostname = value;
+                }
             }
         }
         if (file) {
@@ -501,6 +536,9 @@ void RecorderApp::loadSettings()
     if (settings_.librarySortMode >= LibrarySortMode::kCount) {
         settings_.librarySortMode = LibrarySortMode::kNewest;
     }
+    if (!validWebHostname(settings_.webHostname)) {
+        settings_.webHostname = "recorder";
+    }
 
     // First boot creates a documented, portable configuration on the card.
     if (storage_.isMounted() && !storage_.exists(kRecorderConfigPath)) {
@@ -541,6 +579,8 @@ void RecorderApp::saveSettings()
                 settings_.codexChatNamesMultiline ? "true" : "false");
     file.printf("library_sort=%u\n",
                 static_cast<std::uint8_t>(settings_.librarySortMode));
+    file.printf("web_enabled=%s\n", settings_.webEnabled ? "true" : "false");
+    file.printf("web_hostname=%s\n", settings_.webHostname.c_str());
     file.flush();
     file.close();
     if (storage_.exists(kRecorderConfigPath) &&
@@ -550,6 +590,96 @@ void RecorderApp::saveSettings()
     }
     if (!storage_.rename(kRecorderConfigTempPath, kRecorderConfigPath)) {
         Serial.println("[RECORDER] Could not commit RECORDER.CFG");
+    }
+}
+
+void RecorderApp::writeWebStatus(JsonObject object) const
+{
+    object["mode"] = webStateText();
+    object["version"] = kAppVersion;
+    object["recording_count"] = files_.size();
+    JsonObject battery = object["battery"].to<JsonObject>();
+    battery["valid"] = battery_.valid;
+    battery["percent"] = battery_.levelPercent;
+    battery["millivolts"] = battery_.voltageMv;
+}
+
+void RecorderApp::writeWebSettings(JsonObject object) const
+{
+    object["web_enabled"] = settings_.webEnabled;
+    object["web_hostname"] = settings_.webHostname;
+    object["brightness_percent"] = settings_.brightnessPercent;
+    object["compact_audio"] = settings_.compactAudio;
+    object["low_battery_save_percent"] =
+        settings_.lowBatterySavePercent;
+    object["seek_step_seconds"] = settings_.seekStepSeconds;
+    object["library_sort"] =
+        static_cast<std::uint8_t>(settings_.librarySortMode);
+    object["screen_home"] = settings_.idleScreenMode;
+    object["screen_recording"] = settings_.recordingScreenMode;
+    object["screen_playback"] = settings_.playbackScreenMode;
+}
+
+bool RecorderApp::applyWebSettings(JsonObjectConst object, String& error)
+{
+    String hostname = object["web_hostname"] | settings_.webHostname;
+    hostname.trim();
+    hostname.toLowerCase();
+    const int brightness =
+        object["brightness_percent"] | settings_.brightnessPercent;
+    const int lowBattery = object["low_battery_save_percent"] |
+                           settings_.lowBatterySavePercent;
+    const int seek = object["seek_step_seconds"] | settings_.seekStepSeconds;
+    const int sort = object["library_sort"] |
+                     static_cast<int>(settings_.librarySortMode);
+    if (!validWebHostname(hostname)) {
+        error = "Имя должно содержать 1–32 символа: a-z, 0-9 и дефис";
+        return false;
+    }
+    if (!oneOf(brightness, {10, 30, 50, 70, 90, 100}) ||
+        !oneOf(lowBattery, {0, 1, 5, 10}) ||
+        !oneOf(seek, {5, 10, 20, 60}) || sort < 0 ||
+        sort >= static_cast<int>(LibrarySortMode::kCount)) {
+        error = "Недопустимое значение настройки";
+        return false;
+    }
+    const JsonVariantConst compactValue = object["compact_audio"];
+    bool compact = settings_.compactAudio;
+    if (compactValue.is<bool>()) {
+        compact = compactValue.as<bool>();
+    } else if (compactValue.is<const char*>()) {
+        compact = parseBool(String(compactValue.as<const char*>()), compact);
+    }
+    settings_.webHostname = hostname;
+    settings_.brightnessPercent = static_cast<std::uint8_t>(brightness);
+    settings_.compactAudio = compact;
+    settings_.lowBatterySavePercent =
+        static_cast<std::uint8_t>(lowBattery);
+    settings_.seekStepSeconds = static_cast<std::uint8_t>(seek);
+    settings_.librarySortMode = static_cast<LibrarySortMode>(sort);
+    saveSettings();
+    applyBrightness();
+    sortFiles();
+    web_.configure(settings_.webEnabled, settings_.webHostname);
+    forceRedraw_ = true;
+    return true;
+}
+
+String RecorderApp::webStateText() const
+{
+    switch (state_) {
+        case State::kRecording:
+            return "Запись";
+        case State::kSaving:
+            return "Сохранение";
+        case State::kPlaying:
+            return "Воспроизведение";
+        case State::kSettings:
+            return "Настройки";
+        case State::kError:
+            return "Ошибка";
+        default:
+            return "Готов";
     }
 }
 void RecorderApp::applyBrightness()

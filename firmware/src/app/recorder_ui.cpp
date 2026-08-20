@@ -94,6 +94,7 @@ void RecorderApp::draw()
     const bool active =
         state_ == State::kRecording || state_ == State::kSaving ||
         state_ == State::kPlaying ||
+        uploader_.transferActive() ||
         (state_ == State::kSettings &&
          (settingsPage_ == SettingsPage::kNetwork ||
           settingsPage_ == SettingsPage::kServices));
@@ -209,8 +210,20 @@ void RecorderApp::draw()
         default:
             break;
     }
+    const bool uploadActive = uploader_.transferActive();
+    const std::uint8_t uploadPercent =
+        uploadActive ? uploader_.transferProgressPercent() : 0;
+    if (uploadActive) {
+        pageLabel = "UPLOAD " + String(uploadPercent) + "%";
+    }
     display.drawString(pageLabel, display.width() - 8, 8);
     display.setTextDatum(top_left);
+    if (uploadActive) {
+        display.fillRect(0, 21, display.width(), 3, selectedPanel);
+        display.fillRect(0, 21,
+                         display.width() * uploadPercent / 100, 3,
+                         accent);
+    }
 
     if (state_ == State::kRecording) {
         const std::uint8_t recordingLevel =

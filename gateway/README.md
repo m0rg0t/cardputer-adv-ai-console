@@ -83,9 +83,12 @@ profile can reuse the existing transcript. Built-in profiles are `default`,
 `meeting`, `idea`, and `task`; profile notes are routed below the configured
 Obsidian Cardputer folder.
 
-Long recordings may need more than the default request time of small cloud
-transcription APIs. `TRANSCRIPTION_TIMEOUT_SECONDS=1800` gives the local
-Whisper server up to 30 minutes while its durable job remains visible.
+Long WAV recordings sent to the local Whisper server are split into sequential
+10-minute requests by default, then joined in recording order. Configure this
+with `WHISPER_SERVER_CHUNK_SECONDS` (minimum 60) and
+`WHISPER_SERVER_CHUNK_RETRIES`; temporary chunks are deleted after use.
+`TRANSCRIPTION_TIMEOUT_SECONDS=1800` applies to each request while the durable
+job remains visible.
 
 On macOS the gateway advertises `_cardputer-agent._tcp` through Bonjour while
 it runs. Set `GATEWAY_ADVERTISE_MDNS=false` to disable this, or

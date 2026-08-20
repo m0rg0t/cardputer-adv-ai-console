@@ -82,6 +82,9 @@ public:
     bool configured() const;
     bool wifiConnected() const;
     bool transferActive() const;
+    std::uint8_t transferProgressPercent() const;
+    std::uint32_t transferBytesSent() const;
+    std::uint32_t transferBytesTotal() const;
     String wifiSsid() const;
     String wifiProfileText() const;
     String wifiDisconnectReason() const;
@@ -231,6 +234,8 @@ private:
     String backgroundUploadName_;
     std::uint32_t backgroundUploadSize_ = 0;
     std::atomic<bool> backgroundUploadActive_{false};
+    std::atomic<std::uint32_t> backgroundUploadBytesSent_{0};
+    std::atomic<std::uint32_t> backgroundUploadBytesTotal_{0};
     String lastFailedUploadName_;
     String lastSubmittedJobId_;
     String lastSubmittedThreadId_;

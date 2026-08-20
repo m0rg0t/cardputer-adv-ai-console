@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import tempfile
 from typing import Any
 from urllib.parse import urlparse
+import wave
 
 import httpx
 
@@ -112,23 +114,88 @@ class Transcriber:
         async with httpx.AsyncClient(
             timeout=self.settings.transcription_timeout_seconds
         ) as client:
-            with wav_path.open("rb") as audio:
-                request_data = {"model": self.settings.whisper_server_model}
-                if self.settings.whisper_server_language:
-                    request_data["language"] = (
-                        self.settings.whisper_server_language
-                    )
-                response = await client.post(
-                    f"{base_url}/v1/audio/transcriptions",
-                    headers=headers,
-                    data=request_data,
-                    files={"file": (original_filename, audio, "audio/wav")},
-                )
-        response.raise_for_status()
-        text = response.json().get("text", "").strip()
+            texts = await self._whisper_wav_chunks(
+                client, wav_path, original_filename, headers
+            )
+        text = "\n\n".join(part for part in texts if part).strip()
         if not text:
             raise RuntimeError("Local Whisper server returned empty text")
         return text
+
+    async def _whisper_wav_chunks(
+        self,
+        client: httpx.AsyncClient,
+        wav_path: Path,
+        original_filename: str,
+        headers: dict[str, str],
+    ) -> list[str]:
+        chunk_seconds = self.settings.whisper_server_chunk_seconds
+        with wave.open(str(wav_path), "rb") as source:
+            frames_per_chunk = source.getframerate() * chunk_seconds
+            if source.getnframes() <= frames_per_chunk:
+                return [
+                    await self._request_whisper(
+                        client, wav_path, original_filename, headers
+                    )
+                ]
+
+            texts: list[str] = []
+            part_number = 0
+            with tempfile.TemporaryDirectory(prefix="cardputer-whisper-") as temp_dir:
+                while source.tell() < source.getnframes():
+                    part_number += 1
+                    frames = source.readframes(frames_per_chunk)
+                    if not frames:
+                        break
+                    chunk_path = Path(temp_dir) / f"part-{part_number:03d}.wav"
+                    with wave.open(str(chunk_path), "wb") as chunk:
+                        chunk.setnchannels(source.getnchannels())
+                        chunk.setsampwidth(source.getsampwidth())
+                        chunk.setframerate(source.getframerate())
+                        chunk.setcomptype(source.getcomptype(), source.getcompname())
+                        chunk.writeframes(frames)
+                    chunk_name = (
+                        f"{Path(original_filename).stem}.part-{part_number:03d}.wav"
+                    )
+                    texts.append(
+                        await self._request_whisper(
+                            client, chunk_path, chunk_name, headers
+                        )
+                    )
+                    chunk_path.unlink(missing_ok=True)
+            return texts
+
+    async def _request_whisper(
+        self,
+        client: httpx.AsyncClient,
+        wav_path: Path,
+        filename: str,
+        headers: dict[str, str],
+    ) -> str:
+        request_data = {"model": self.settings.whisper_server_model}
+        if self.settings.whisper_server_language:
+            request_data["language"] = self.settings.whisper_server_language
+
+        retries = self.settings.whisper_server_chunk_retries
+        for attempt in range(retries + 1):
+            try:
+                with wav_path.open("rb") as audio:
+                    response = await client.post(
+                        f"{self.settings.whisper_server_url}/v1/audio/transcriptions",
+                        headers=headers,
+                        data=request_data,
+                        files={"file": (filename, audio, "audio/wav")},
+                    )
+                response.raise_for_status()
+                return response.json().get("text", "").strip()
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code < 500 or attempt >= retries:
+                    raise
+            except httpx.TransportError:
+                if attempt >= retries:
+                    raise
+            await asyncio.sleep(min(2**attempt, 5))
+        raise RuntimeError("Whisper request retry loop ended unexpectedly")
 
     async def _faster_whisper(self, wav_path: Path) -> str:
         # Decoding is CPU-bound. Keep it away from FastAPI's event loop and

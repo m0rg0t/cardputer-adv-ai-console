@@ -31,6 +31,14 @@ void RecorderApp::begin()
         setError("Insert a writable microSD card.");
     } else {
         uploader_.begin(storage_);
+        web_.begin(
+            storage_, uploader_,
+            [this](JsonObject object) { writeWebStatus(object); },
+            [this](JsonObject object) { writeWebSettings(object); },
+            [this](JsonObjectConst object, String& error) {
+                return applyWebSettings(object, error);
+            });
+        web_.configure(settings_.webEnabled, settings_.webHostname);
         scanFiles();
         message_ = "Hold G0 for settings.";
     }
@@ -56,6 +64,9 @@ void RecorderApp::update()
           settingsPage_ == SettingsPage::kServices));
     uploader_.update(
         networkUiAllowed &&
+        codexSpeechState_.load(std::memory_order_acquire) == 0);
+    web_.update(
+        networkUiAllowed && !uploader_.transferActive() &&
         codexSpeechState_.load(std::memory_order_acquire) == 0);
     if (uploader_.takeRecordingChanged()) {
         scanFiles();

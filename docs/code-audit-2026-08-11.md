@@ -37,6 +37,8 @@
 6. **Preserve firmware headroom.** The public 2.7.2 M5Apps image is 1,437,808
    bytes, leaving only 3,984 bytes in the `0x160000` slot. New substantial
    features should move server-side or replace existing strings/code paths.
+   _Update (2026-08-20): current M5Apps uses a `0x170000` `apps_app`
+   partition; the repository's release check now follows that upstream size._
 7. **Expand device-side tests.** Native WAV tests and gateway integration tests
    are green; state transitions, retry synchronization, and background-task/SD
    exclusion still need hardware-in-loop coverage.

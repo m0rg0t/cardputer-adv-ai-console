@@ -64,6 +64,9 @@ repository. See [SECURITY.md](SECURITY.md) before publishing or deploying it.
   credentials on the device.
 - Require certificate validation for HTTPS uploads.
 - Store recorder, Wi-Fi, endpoint, certificate, and delivery state on microSD.
+- Serve a local administration panel at `http://recorder.local/` with device,
+  Wi-Fi, battery, and microSD status; WAV playback/download; and persistent
+  recorder settings.
 - List and open existing local Codex Desktop/CLI chats through a gateway.
 - Switch the task list between compact one-line names and full wrapped names.
 - Type messages on the Cardputer keyboard or send a recording to a selected
@@ -118,6 +121,12 @@ You can also use the checked release image in
 baud. See [`firmware/sdcard/README.md`](firmware/sdcard/README.md)
 for card setup and [`gateway/README.md`](gateway/README.md) for transcription and
 Obsidian delivery.
+
+Once Wi-Fi connects, open `http://recorder.local/` from another device on the
+same network. If the network blocks mDNS, use the numeric address shown under
+**Settings → Network → IP**. Audio-list and settings writes temporarily return
+`503` while recording, playing, saving, or uploading so HTTP never contends
+with real-time audio for the microSD bus.
 
 To run host-side tests:
 
