@@ -29,10 +29,16 @@ class Settings:
     audio_export_format: str = "mp3"
     ffmpeg_executable: str = "ffmpeg"
     tts_enabled: bool = False
+    tts_provider: str = "macos"
+    tts_name: str = ""
     tts_voice: str = "Milena"
     tts_rate: int = 190
     tts_max_chars: int = 6000
     say_executable: str = "say"
+    elevenlabs_api_key: str = ""
+    elevenlabs_voice: str = "onwK4e9ZLuTAKqWW03F9"
+    elevenlabs_model: str = "eleven_multilingual_v2"
+    elevenlabs_output_format: str = "mp3_44100_128"
     codex_formatter_timeout_seconds: int = 180
     codex_enabled: bool = False
     codex_executable: str = "codex"
@@ -41,7 +47,7 @@ class Settings:
     advertise_port: int = 8765
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         token = os.environ.get("VOICE_DEVICE_TOKEN", "")
         if len(token) < 16:
             raise RuntimeError("VOICE_DEVICE_TOKEN must contain at least 16 characters")
@@ -72,15 +78,9 @@ class Settings:
             whisper_server_url=os.environ.get(
                 "WHISPER_SERVER_URL", "http://127.0.0.1:12017"
             ).rstrip("/"),
-            whisper_server_model=os.environ.get(
-                "WHISPER_SERVER_MODEL", "medium-q5_0"
-            ),
-            whisper_server_language=os.environ.get(
-                "WHISPER_SERVER_LANGUAGE", "ru"
-            ),
-            whisper_server_api_key=os.environ.get(
-                "WHISPER_SERVER_API_KEY", ""
-            ),
+            whisper_server_model=os.environ.get("WHISPER_SERVER_MODEL", "medium-q5_0"),
+            whisper_server_language=os.environ.get("WHISPER_SERVER_LANGUAGE", "ru"),
+            whisper_server_api_key=os.environ.get("WHISPER_SERVER_API_KEY", ""),
             transcription_timeout_seconds=int(
                 os.environ.get("TRANSCRIPTION_TIMEOUT_SECONDS", "1800")
             ),
@@ -91,18 +91,28 @@ class Settings:
                 "TRANSCRIPT_FORMATTER",
                 "openai-compatible" if os.environ.get("AGENT_BASE_URL") else "none",
             ).lower(),
-            audio_export_format=os.environ.get(
-                "OBSIDIAN_AUDIO_FORMAT", "mp3"
-            ).strip().lower(),
-            ffmpeg_executable=os.environ.get(
-                "FFMPEG_EXECUTABLE", "ffmpeg"
-            ).strip(),
+            audio_export_format=os.environ.get("OBSIDIAN_AUDIO_FORMAT", "mp3")
+            .strip()
+            .lower(),
+            ffmpeg_executable=os.environ.get("FFMPEG_EXECUTABLE", "ffmpeg").strip(),
             tts_enabled=os.environ.get("TTS_ENABLED", "false").lower()
             in {"1", "true", "yes", "on"},
+            tts_provider=os.environ.get("TTS_PROVIDER", "macos").strip().lower(),
+            tts_name=os.environ.get("TTS_NAME", "").strip(),
             tts_voice=os.environ.get("TTS_VOICE", "Milena").strip(),
             tts_rate=int(os.environ.get("TTS_RATE", "190")),
             tts_max_chars=int(os.environ.get("TTS_MAX_CHARS", "6000")),
             say_executable=os.environ.get("SAY_EXECUTABLE", "say").strip(),
+            elevenlabs_api_key=os.environ.get("ELEVENLABS_API_KEY", "").strip(),
+            elevenlabs_voice=os.environ.get(
+                "ELEVENLABS_VOICE", "onwK4e9ZLuTAKqWW03F9"
+            ).strip(),
+            elevenlabs_model=os.environ.get(
+                "ELEVENLABS_MODEL", "eleven_multilingual_v2"
+            ).strip(),
+            elevenlabs_output_format=os.environ.get(
+                "ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128"
+            ).strip(),
             codex_formatter_timeout_seconds=int(
                 os.environ.get("CODEX_FORMATTER_TIMEOUT_SECONDS", "180")
             ),

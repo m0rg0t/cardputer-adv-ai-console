@@ -13,3 +13,5 @@ vad_enabled=false
 triple_press_wake=false
 # Library sort: 0=newest, 1=oldest, 2=status, 3=name.
 library_sort=0
+# Codex task names: true=full wrapped title, false=one-line list.
+codex_names_full=true

@@ -58,6 +58,7 @@ private:
         bool compactAudio = false;
         bool vadEnabled = false;
         bool triplePressWake = false;
+        bool codexChatNamesMultiline = true;
         std::uint8_t codexTextScale = 1;
         std::uint8_t transcriptTextScale = 1;
         LibrarySortMode librarySortMode = LibrarySortMode::kNewest;
@@ -117,6 +118,7 @@ private:
     void openCodexChats();
     void refreshCodexChats();
     void handleCodexChatsInput(const InputEvent& event);
+    void createCodexTask(bool startWithVoice);
     void openCodexConversation();
     void handleCodexConversationInput(const InputEvent& event);
     void openCodexCompose();

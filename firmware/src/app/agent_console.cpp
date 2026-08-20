@@ -49,19 +49,11 @@ void RecorderApp::handleCodexChatsInput(const InputEvent& event)
         return;
     }
     if (event.primaryKey == 'n' || event.primaryKey == 'N') {
-        UploadService::CodexChat chat;
-        message_ = "Creating Codex task...";
-        forceRedraw_ = true;
-        draw();
-        if (uploader_.createCodexChat(chat)) {
-            codexChats_.insert(codexChats_.begin(), chat);
-            selectedCodexChat_ = 0;
-            openCodexConversation();
-            openCodexCompose();
-        } else {
-            message_ = "Could not create task.";
-            forceRedraw_ = true;
-        }
+        createCodexTask(false);
+        return;
+    }
+    if (event.primaryKey == 'v' || event.primaryKey == 'V') {
+        createCodexTask(true);
         return;
     }
     if ((event.primaryKey == 'c' || event.primaryKey == 'C') &&
@@ -117,6 +109,27 @@ void RecorderApp::handleCodexChatsInput(const InputEvent& event)
         openCodexCompose();
     } else if (event.primaryKey == 'c' || event.primaryKey == 'C') {
         refreshCodexChats();
+    }
+}
+
+void RecorderApp::createCodexTask(bool startWithVoice)
+{
+    UploadService::CodexChat chat;
+    message_ = "Creating Codex task...";
+    forceRedraw_ = true;
+    draw();
+    if (!uploader_.createCodexChat(chat)) {
+        message_ = "Could not create task.";
+        forceRedraw_ = true;
+        return;
+    }
+    codexChats_.insert(codexChats_.begin(), chat);
+    selectedCodexChat_ = 0;
+    openCodexConversation();
+    if (startWithVoice) {
+        startRecording(UploadService::Destination::kCodex);
+    } else {
+        openCodexCompose();
     }
 }
 

@@ -312,10 +312,15 @@ void RecorderApp::cycleSelectedSetting(int offset)
         return;
     }
     if (settingsPage_ == SettingsPage::kReading) {
-        std::uint8_t& scale = selectedSetting_ == 0
-                                  ? settings_.codexTextScale
-                                  : settings_.transcriptTextScale;
-        scale = scale == 1 ? 2 : 1;
+        if (selectedSetting_ == 2) {
+            settings_.codexChatNamesMultiline =
+                !settings_.codexChatNamesMultiline;
+        } else {
+            std::uint8_t& scale = selectedSetting_ == 0
+                                      ? settings_.codexTextScale
+                                      : settings_.transcriptTextScale;
+            scale = scale == 1 ? 2 : 1;
+        }
         saveSettings();
         forceRedraw_ = true;
         return;
@@ -445,6 +450,9 @@ void RecorderApp::loadSettings()
                 settings_.codexTextScale = value.toInt();
             } else if (key == "transcript_text_scale") {
                 settings_.transcriptTextScale = value.toInt();
+            } else if (key == "codex_names_full") {
+                settings_.codexChatNamesMultiline =
+                    parseBool(value, settings_.codexChatNamesMultiline);
             } else if (key == "library_sort") {
                 settings_.librarySortMode =
                     static_cast<LibrarySortMode>(value.toInt());
@@ -529,6 +537,8 @@ void RecorderApp::saveSettings()
     file.printf("codex_text_scale=%u\n", settings_.codexTextScale);
     file.printf("transcript_text_scale=%u\n",
                 settings_.transcriptTextScale);
+    file.printf("codex_names_full=%s\n",
+                settings_.codexChatNamesMultiline ? "true" : "false");
     file.printf("library_sort=%u\n",
                 static_cast<std::uint8_t>(settings_.librarySortMode));
     file.flush();
@@ -568,6 +578,9 @@ String RecorderApp::settingValueText(std::uint8_t index) const
         }
     }
     if (settingsPage_ == SettingsPage::kReading) {
+        if (index == 2) {
+            return settings_.codexChatNamesMultiline ? "FULL" : "1 LINE";
+        }
         const std::uint8_t scale = index == 0 ? settings_.codexTextScale
                                               : settings_.transcriptTextScale;
         return String(scale) + "x";

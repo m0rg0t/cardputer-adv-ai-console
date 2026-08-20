@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
-import asyncio
 import os
 import re
 import shutil
@@ -10,7 +10,7 @@ import tempfile
 import uuid
 import wave
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +22,12 @@ from .agent import AgentFormatter
 from .codex import CodexAppServer, CodexBackend, CodexDisabled
 from .config import Settings
 from .profiles import PROFILES, get_profile
-from .store import NoteStore
 from .speech import SpeechSynthesizer
+from .store import NoteStore
 from .transcription import Transcriber
 
-
 SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._ -]+")
+UNSAFE_TITLE_FILENAME = re.compile(r"[\\/:*?\"<>|\x00-\x1f]+")
 SAFE_THREAD_ID = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 SAFE_PROFILE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 VOICE_DESTINATIONS = {"note", "codex", "both"}
@@ -61,6 +61,20 @@ def _yaml(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _safe_title(value: str) -> str:
+    value = UNSAFE_TITLE_FILENAME.sub(" - ", value)
+    value = re.sub(r"\s+", " ", value).strip(" .-_—–")
+    return value[:72].strip() or "Голосовая заметка"
+
+
+def _suggested_recording_filename(title: str, now: datetime | None = None) -> str:
+    now = now or datetime.now().astimezone()
+    recording_title = _safe_title(title)[:48]
+    if recording_title.lower().endswith(".wav"):
+        recording_title = recording_title[:-4].rstrip(" .-_")
+    return f"{now:%Y-%m-%d %H-%M-%S} - {recording_title}.WAV"
+
+
 def _validate_wav(path: Path) -> dict[str, int]:
     try:
         with wave.open(str(path), "rb") as wav:
@@ -71,7 +85,9 @@ def _validate_wav(path: Path) -> dict[str, int]:
                 "frames": wav.getnframes(),
             }
     except (wave.Error, EOFError) as error:
-        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Invalid WAV") from error
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Invalid WAV"
+        ) from error
     if metadata["channels"] != 1 or metadata["sample_width"] != 2:
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -129,18 +145,21 @@ def _write_note(
     device_name: str,
     transcript: str,
     formatted: str | None,
+    title: str,
     wav: dict[str, int],
     profile_id: str = "default",
     note_path: Path | None = None,
     audio_filename: str = "",
 ) -> Path:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     profile = get_profile(profile_id)
-    root = settings.notes_root / profile.folder if profile.folder else settings.notes_root
+    title = _safe_title(title)
+    root = (
+        settings.notes_root / profile.folder if profile.folder else settings.notes_root
+    )
     root.mkdir(parents=True, exist_ok=True)
-    stem = _safe_name(Path(original_filename).stem, "recording")
     note_path = note_path or (
-        root / f"{now:%Y-%m-%d %H-%M-%S} - {stem} - {digest[:8]}.md"
+        root / f"{now:%Y-%m-%d %H-%M-%S} - {title} - {digest[:8]}.md"
     )
     body = [
         "---",
@@ -151,13 +170,14 @@ def _write_note(
         f"audio_sha256: {_yaml(digest)}",
         f"audio_file: {_yaml(audio_filename)}",
         f"profile: {_yaml(profile.id)}",
+        f"title: {_yaml(title)}",
         f"sample_rate: {wav['sample_rate']}",
         "tags:",
         *[f"  - {tag}" for tag in profile.tags],
         "  - cardputer",
         "---",
         "",
-        f"# {profile.name} — {stem}",
+        f"# {title}",
         "",
     ]
     if audio_filename:
@@ -178,13 +198,15 @@ def _new_note_path(
     digest: str,
     original_filename: str,
     profile_id: str,
+    title: str,
 ) -> Path:
-    now = datetime.now(timezone.utc)
+    now = datetime.now().astimezone()
     profile = get_profile(profile_id)
-    root = settings.notes_root / profile.folder if profile.folder else settings.notes_root
+    root = (
+        settings.notes_root / profile.folder if profile.folder else settings.notes_root
+    )
     root.mkdir(parents=True, exist_ok=True)
-    stem = _safe_name(Path(original_filename).stem, "recording")
-    return root / f"{now:%Y-%m-%d %H-%M-%S} - {stem} - {digest[:8]}.md"
+    return root / (f"{now:%Y-%m-%d %H-%M-%S} - {_safe_title(title)} - {digest[:8]}.md")
 
 
 async def _export_note_audio(
@@ -240,6 +262,7 @@ async def _create_note_with_audio(
     device_name: str,
     transcript: str,
     formatted: str | None,
+    title: str,
     wav: dict[str, int],
     profile_id: str = "default",
 ) -> Path:
@@ -248,6 +271,7 @@ async def _create_note_with_audio(
         digest=digest,
         original_filename=original_filename,
         profile_id=profile_id,
+        title=title,
     )
     audio_path = await _export_note_audio(settings, wav_path, note_path)
     return _write_note(
@@ -257,6 +281,7 @@ async def _create_note_with_audio(
         device_name=device_name,
         transcript=transcript,
         formatted=formatted,
+        title=title,
         wav=wav,
         profile_id=profile_id,
         note_path=note_path,
@@ -310,13 +335,25 @@ def create_app(
                 transcript = await transcriber.transcribe(
                     audio_path, job.original_filename
                 )
-                store.update_voice_job(
-                    job.id, transcript=transcript, progress=55
-                )
+                store.update_voice_job(job.id, transcript=transcript, progress=55)
 
             current = store.get_voice_job(job.id)
             if current and current.status == "canceled":
                 return
+
+            title = job.title
+            suggested_filename = job.suggested_filename
+            if not title:
+                stage = "titling"
+                store.update_voice_job(job.id, stage=stage, progress=60)
+                title = _safe_title(await formatter.title(transcript))
+            if not suggested_filename:
+                suggested_filename = _suggested_recording_filename(title)
+                store.update_voice_job(
+                    job.id,
+                    title=title,
+                    suggested_filename=suggested_filename,
+                )
 
             note_path: Path | None = Path(job.note_path) if job.note_path else None
             formatted = job.formatted
@@ -324,11 +361,12 @@ def create_app(
                 if not note_path or not note_path.is_file():
                     if not formatted:
                         stage = "formatting"
-                        store.update_voice_job(job.id, stage=stage, progress=65)
+                        store.update_voice_job(job.id, stage=stage, progress=68)
                         profile = get_profile(job.profile)
-                        formatted = await formatter.format(
-                            transcript, profile.instruction
-                        ) or ""
+                        formatted = (
+                            await formatter.format(transcript, profile.instruction)
+                            or ""
+                        )
                         store.update_voice_job(job.id, formatted=formatted)
                     stage = "saving"
                     store.update_voice_job(job.id, stage=stage, progress=78)
@@ -340,12 +378,11 @@ def create_app(
                         device_name=job.device_name,
                         transcript=transcript,
                         formatted=formatted or None,
+                        title=title,
                         wav=wav_metadata,
                         profile_id=job.profile,
                     )
-                store.update_voice_job(
-                    job.id, note_path=str(note_path), progress=85
-                )
+                store.update_voice_job(job.id, note_path=str(note_path), progress=85)
 
             current = store.get_voice_job(job.id)
             if current and current.status == "canceled":
@@ -378,6 +415,8 @@ def create_app(
                 error="",
                 transcript=transcript,
                 formatted=formatted,
+                title=title,
+                suggested_filename=suggested_filename,
                 note_path=str(note_path) if note_path else "",
                 codex_job_id=codex_job_id,
             )
@@ -439,9 +478,7 @@ def create_app(
                 await mdns_process.wait()
             await codex.close()
 
-    app = FastAPI(
-        title="Cardputer Agent Gateway", version="0.2.0", lifespan=lifespan
-    )
+    app = FastAPI(title="Cardputer Agent Gateway", version="0.2.0", lifespan=lifespan)
     app.state.process_pending_voice_jobs = process_pending_voice_jobs
     app.state.store = store
 
@@ -487,8 +524,7 @@ def create_app(
                     for job in store.list_voice_jobs(limit=100)
                 ),
                 "failed": sum(
-                    job.status == "failed"
-                    for job in store.list_voice_jobs(limit=100)
+                    job.status == "failed" for job in store.list_voice_jobs(limit=100)
                 ),
             },
         }
@@ -520,9 +556,7 @@ def create_app(
         if destination not in VOICE_DESTINATIONS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid destination")
         thread_id = x_codex_thread_id.strip()
-        if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(
-            thread_id
-        ):
+        if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(thread_id):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Codex thread is required")
         profile = x_voice_profile.strip().lower() or "default"
         if not SAFE_PROFILE.fullmatch(profile):
@@ -683,9 +717,7 @@ def create_app(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid voice profile")
         if destination not in VOICE_DESTINATIONS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid destination")
-        if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(
-            thread_id
-        ):
+        if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(thread_id):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Codex thread is required")
         route_key = f"{source.digest}:{destination}:{thread_id}:{profile}"
         existing = store.find_voice_job_by_route(route_key)
@@ -705,7 +737,12 @@ def create_app(
             profile=profile,
             audio_path=Path(source.audio_path),
         )
-        job = store.update_voice_job(new_id, transcript=source.transcript)
+        job = store.update_voice_job(
+            new_id,
+            transcript=source.transcript,
+            title=source.title,
+            suggested_filename=source.suggested_filename,
+        )
         work_event.set()
         return job.public(include_transcript=False)
 
@@ -719,7 +756,9 @@ def create_app(
         _require_token(x_device_token, settings.device_token)
         content_length = int(request.headers.get("content-length", "0") or 0)
         if content_length <= 44 or content_length > settings.max_upload_bytes:
-            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size")
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size"
+            )
 
         filename = _safe_name(x_voice_filename, "recording.wav")
         device_name = _safe_name(x_device_name, "cardputer-adv")
@@ -758,6 +797,7 @@ def create_app(
             wav_metadata = _validate_wav(temporary_path)
             transcript = await transcriber.transcribe(temporary_path, filename)
             formatted = await formatter.format(transcript)
+            title = _safe_title(await formatter.title(transcript))
             note_path = await _create_note_with_audio(
                 settings,
                 wav_path=temporary_path,
@@ -766,6 +806,7 @@ def create_app(
                 device_name=device_name,
                 transcript=transcript,
                 formatted=formatted,
+                title=title,
                 wav=wav_metadata,
             )
             stored = store.add(
@@ -814,14 +855,14 @@ def create_app(
                 not transcript_limit or len(transcript) <= transcript_limit
             )
 
-        if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(
-            thread_id
-        ):
+        if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(thread_id):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Codex thread is required")
 
         content_length = int(request.headers.get("content-length", "0") or 0)
         if content_length <= 44 or content_length > settings.max_upload_bytes:
-            raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size")
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size"
+            )
         filename = _safe_name(x_voice_filename, "recording.wav")
         device_name = _safe_name(x_device_name, "cardputer-adv")
         digest = hashlib.sha256()
@@ -862,6 +903,7 @@ def create_app(
 
             wav_metadata = _validate_wav(temporary_path)
             transcript = await transcriber.transcribe(temporary_path, filename)
+            title = _safe_title(await formatter.title(transcript))
             note_path: Path | None = None
             if destination in {"note", "both"}:
                 existing_note = store.find(sha256)
@@ -877,6 +919,7 @@ def create_app(
                         device_name=device_name,
                         transcript=transcript,
                         formatted=formatted,
+                        title=title,
                         wav=wav_metadata,
                     )
                     store.add(
@@ -928,7 +971,9 @@ def create_app(
         try:
             threads = await codex.list_threads(limit)
         except RuntimeError as error:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error)) from error
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
+            ) from error
         return {"data": [_thread_summary(thread) for thread in threads]}
 
     @app.post("/v1/codex/chats")
@@ -938,11 +983,15 @@ def create_app(
         _require_token(x_device_token, settings.device_token)
         cwd = body.cwd or settings.codex_default_cwd
         if settings.codex_default_cwd and cwd != settings.codex_default_cwd:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Unsupported working directory")
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN, "Unsupported working directory"
+            )
         try:
             thread = await codex.start_thread(cwd)
         except RuntimeError as error:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error)) from error
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
+            ) from error
         return _thread_summary(thread)
 
     @app.get("/v1/codex/chats/{thread_id}")
@@ -955,7 +1004,9 @@ def create_app(
         try:
             thread = await codex.read_thread(thread_id)
         except RuntimeError as error:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error)) from error
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
+            ) from error
         result = _thread_summary(thread)
         result["messages"] = _thread_messages(thread)
         return result
@@ -976,8 +1027,11 @@ def create_app(
             messages = _thread_messages(thread, limit=32)
             if scope == "last":
                 text = next(
-                    (item["text"] for item in reversed(messages)
-                     if item["role"] == "assistant"),
+                    (
+                        item["text"]
+                        for item in reversed(messages)
+                        if item["role"] == "assistant"
+                    ),
                     "",
                 )
             else:
@@ -1012,7 +1066,9 @@ def create_app(
         try:
             job = await codex.start_turn(thread_id, body.text)
         except (RuntimeError, ValueError) as error:
-            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(error)) from error
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
+            ) from error
         return job.public()
 
     @app.get("/v1/codex/jobs/{job_id}")
