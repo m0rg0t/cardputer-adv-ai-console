@@ -88,7 +88,7 @@ class Transcriber:
                     files={"file": (original_filename, audio, "audio/wav")},
                 )
         response.raise_for_status()
-        text = response.json().get("text", "").strip()
+        text = self._response_text(response, "OpenAI transcription provider")
         if not text:
             raise RuntimeError("Transcription provider returned empty text")
         return text
@@ -130,8 +130,14 @@ class Transcriber:
         headers: dict[str, str],
     ) -> list[str]:
         chunk_seconds = self.settings.whisper_server_chunk_seconds
+        if not isinstance(chunk_seconds, int) or chunk_seconds <= 0:
+            raise RuntimeError(
+                "WHISPER_SERVER_CHUNK_SECONDS must be a positive integer"
+            )
         with wave.open(str(wav_path), "rb") as source:
             frames_per_chunk = source.getframerate() * chunk_seconds
+            if frames_per_chunk <= 0:
+                raise RuntimeError("WAV sample rate must be positive")
             if source.getnframes() <= frames_per_chunk:
                 return [
                     await self._request_whisper(
@@ -187,7 +193,7 @@ class Transcriber:
                         files={"file": (filename, audio, "audio/wav")},
                     )
                 response.raise_for_status()
-                return response.json().get("text", "").strip()
+                return self._response_text(response, "Whisper server")
             except httpx.HTTPStatusError as error:
                 if error.response.status_code < 500 or attempt >= retries:
                     raise
@@ -196,6 +202,20 @@ class Transcriber:
                     raise
             await asyncio.sleep(min(2**attempt, 5))
         raise RuntimeError("Whisper request retry loop ended unexpectedly")
+
+    @staticmethod
+    def _response_text(response: httpx.Response, provider: str) -> str:
+        """Extract a usable transcript and turn malformed JSON into a clear error."""
+        try:
+            payload = response.json()
+        except (ValueError, UnicodeError, TypeError) as error:
+            raise RuntimeError(f"{provider} returned invalid JSON") from error
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{provider} returned an invalid response")
+        text = payload.get("text", "")
+        if not isinstance(text, str):
+            raise RuntimeError(f"{provider} returned invalid transcript text")
+        return text.strip()
 
     async def _faster_whisper(self, wav_path: Path) -> str:
         # Decoding is CPU-bound. Keep it away from FastAPI's event loop and

@@ -354,6 +354,49 @@ class NoteStore:
             raise KeyError(job_id)
         return job
 
+    def update_voice_job_unless_canceled(
+        self, job_id: str, **changes: object
+    ) -> StoredVoiceJob:
+        """Update a job unless a concurrent request already canceled it.
+
+        Voice processing performs several network and filesystem steps.  A
+        cancellation request can arrive after the worker's last status check,
+        so the final ``completed`` write must be conditional in the same SQL
+        statement; a separate read/check would still leave a race window.
+        """
+        allowed = {
+            "status",
+            "stage",
+            "progress",
+            "error",
+            "transcript",
+            "formatted",
+            "title",
+            "suggested_filename",
+            "note_path",
+            "codex_job_id",
+            "attempts",
+            "audio_path",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported voice job fields: {sorted(unknown)}")
+        changes["updated_at"] = datetime.now(UTC).isoformat()
+        columns = ", ".join(f"{name} = ?" for name in changes)
+        values = tuple(changes.values()) + (job_id,)
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE voice_jobs SET {columns} "
+                "WHERE id = ? AND status <> 'canceled'",
+                values,
+            )
+            row = connection.execute(
+                "SELECT * FROM voice_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return StoredVoiceJob(**dict(row))
+
     def recover_voice_jobs(self) -> None:
         """Return interrupted work to the queue after a gateway restart."""
         now = datetime.now(UTC).isoformat()

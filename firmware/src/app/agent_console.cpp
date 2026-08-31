@@ -264,6 +264,7 @@ void RecorderApp::startCodexSpeech(bool conversation)
         return;
     }
     codexSpeechConversation_ = conversation;
+    codexSpeechThreadId_ = selectedCodexThreadId_;
     message_ = conversation ? "Preparing conversation audio..."
                             : "Preparing latest reply audio...";
     forceRedraw_ = true;
@@ -271,6 +272,7 @@ void RecorderApp::startCodexSpeech(bool conversation)
     if (xTaskCreatePinnedToCore(codexSpeechTaskEntry, "codex_tts", 8192,
                                 this, 1, &task, 0) != pdPASS) {
         codexSpeechState_.store(0, std::memory_order_release);
+        codexSpeechThreadId_ = "";
         message_ = "Could not start speech task.";
     }
 }
@@ -283,7 +285,7 @@ void RecorderApp::codexSpeechTaskEntry(void* context)
 void RecorderApp::codexSpeechTask()
 {
     const bool ready = uploader_.downloadCodexSpeech(
-        selectedCodexThreadId_, codexSpeechConversation_,
+        codexSpeechThreadId_, codexSpeechConversation_,
         "/CODEX_TTS.WAV");
     codexSpeechState_.store(ready ? 2 : 3, std::memory_order_release);
     vTaskDelete(nullptr);

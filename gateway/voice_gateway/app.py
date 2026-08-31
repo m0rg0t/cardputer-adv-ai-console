@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import os
 import re
+import sqlite3
 import shutil
 import tempfile
 import uuid
@@ -14,6 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -31,6 +33,15 @@ UNSAFE_TITLE_FILENAME = re.compile(r"[\\/:*?\"<>|\x00-\x1f]+")
 SAFE_THREAD_ID = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 SAFE_PROFILE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 VOICE_DESTINATIONS = {"note", "codex", "both"}
+VOICE_PROCESSING_ERRORS = (
+    RuntimeError,
+    OSError,
+    ValueError,
+    EOFError,
+    TimeoutError,
+    wave.Error,
+    httpx.HTTPError,
+)
 
 
 class CodexMessage(BaseModel):
@@ -84,7 +95,24 @@ def _validate_wav(path: Path) -> dict[str, int]:
                 "sample_width": wav.getsampwidth(),
                 "frames": wav.getnframes(),
             }
-    except (wave.Error, EOFError) as error:
+            if metadata["channels"] <= 0 or metadata["sample_width"] <= 0:
+                raise HTTPException(
+                    status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Invalid WAV audio"
+                )
+            bytes_per_frame = metadata["channels"] * metadata["sample_width"]
+            expected_audio_bytes = metadata["frames"] * bytes_per_frame
+            read_audio_bytes = 0
+            remaining_frames = metadata["frames"]
+            while remaining_frames > 0:
+                chunk = wav.readframes(min(remaining_frames, 4096))
+                if not chunk or len(chunk) % bytes_per_frame != 0:
+                    break
+                read_audio_bytes += len(chunk)
+                frames_read = len(chunk) // bytes_per_frame
+                if frames_read == 0:
+                    break
+                remaining_frames -= frames_read
+    except (wave.Error, EOFError, OSError, ValueError) as error:
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Invalid WAV"
         ) from error
@@ -95,7 +123,28 @@ def _validate_wav(path: Path) -> dict[str, int]:
         )
     if not 8000 <= metadata["sample_rate"] <= 48000 or metadata["frames"] == 0:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Invalid WAV audio")
+    if remaining_frames != 0 or read_audio_bytes != expected_audio_bytes:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "Truncated WAV audio")
     return metadata
+
+
+def _content_length(request: Request) -> int:
+    """Read the required length header without turning bad input into a 500."""
+    raw = request.headers.get("content-length", "")
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Invalid Content-Length"
+        ) from error
+
+
+def _voice_processing_http_error(error: Exception) -> HTTPException:
+    detail = str(error).strip() or error.__class__.__name__
+    return HTTPException(
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+        f"Voice processing unavailable: {detail[:300]}",
+    )
 
 
 def _require_token(provided: str, expected: str) -> None:
@@ -104,30 +153,68 @@ def _require_token(provided: str, expected: str) -> None:
 
 
 def _thread_summary(thread: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(thread, dict):
+        raise RuntimeError("Codex returned an invalid thread")
+    thread_id = thread.get("id")
+    if not isinstance(thread_id, str):
+        thread_id = ""
+    preview = thread.get("preview")
+    if not isinstance(preview, str):
+        preview = ""
+    name = thread.get("name")
+    if not isinstance(name, str) or not name.strip():
+        name = preview or "Untitled"
+    status_payload = thread.get("status")
+    status_name = (
+        status_payload.get("type") if isinstance(status_payload, dict) else "unknown"
+    )
+    if not isinstance(status_name, str) or not status_name:
+        status_name = "unknown"
     return {
-        "id": thread.get("id", ""),
-        "name": thread.get("name") or thread.get("preview") or "Untitled",
-        "preview": thread.get("preview", "")[:240],
-        "cwd": thread.get("cwd", ""),
+        "id": thread_id,
+        "name": name,
+        "preview": preview[:240],
+        "cwd": thread.get("cwd", "")
+        if isinstance(thread.get("cwd", ""), str)
+        else "",
         "updated_at": thread.get("updatedAt"),
-        "status": (thread.get("status") or {}).get("type", "unknown"),
+        "status": status_name,
     }
 
 
 def _thread_messages(thread: dict[str, Any], limit: int = 16) -> list[dict[str, str]]:
+    if not isinstance(thread, dict):
+        raise RuntimeError("Codex returned an invalid thread")
+    limit = max(1, min(limit, 64))
+    turns = thread.get("turns") or []
+    if not isinstance(turns, list):
+        raise RuntimeError("Codex returned invalid thread turns")
     messages: list[dict[str, str]] = []
-    for turn in thread.get("turns") or []:
-        for item in turn.get("items") or []:
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        items = turn.get("items") or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
             item_type = item.get("type")
             if item_type == "agentMessage":
                 text = item.get("text", "")
                 role = "assistant"
+                if not isinstance(text, str):
+                    continue
             elif item_type == "userMessage":
                 pieces = item.get("content") or []
+                if not isinstance(pieces, list):
+                    continue
                 text = "\n".join(
-                    str(piece.get("text", ""))
+                    piece.get("text", "")
                     for piece in pieces
-                    if piece.get("type") == "text"
+                    if isinstance(piece, dict)
+                    and piece.get("type") == "text"
+                    and isinstance(piece.get("text", ""), str)
                 )
                 role = "user"
             else:
@@ -186,9 +273,19 @@ def _write_note(
         body.extend([formatted, "", "## Raw transcript", "", transcript, ""])
     else:
         body.extend([transcript, ""])
-    temporary = note_path.with_suffix(".md.tmp")
-    temporary.write_text("\n".join(body), encoding="utf-8")
-    os.replace(temporary, note_path)
+    # A request can finish alongside another request (or a restarted worker)
+    # for the same digest.  Never share a fixed ``.md.tmp`` path: one writer
+    # could otherwise replace the other's partial note.
+    temporary = note_path.with_name(f".{note_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text("\n".join(body), encoding="utf-8")
+        os.replace(temporary, note_path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return note_path
 
 
@@ -222,7 +319,7 @@ async def _export_note_audio(
     if not executable:
         raise RuntimeError(f"FFmpeg executable not found: {settings.ffmpeg_executable}")
     audio_path = note_path.with_suffix(".mp3")
-    temporary = audio_path.with_suffix(".mp3.tmp")
+    temporary = audio_path.with_name(f".{audio_path.name}.{uuid.uuid4().hex}.tmp")
     temporary.unlink(missing_ok=True)
     process = await asyncio.create_subprocess_exec(
         executable,
@@ -244,12 +341,46 @@ async def _export_note_audio(
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await process.communicate()
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+    except TimeoutError as error:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except (TimeoutError, OSError):
+            pass
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError("MP3 conversion timed out") from error
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except (TimeoutError, OSError):
+            pass
+        temporary.unlink(missing_ok=True)
+        raise
     if process.returncode != 0:
         temporary.unlink(missing_ok=True)
         detail = stderr.decode("utf-8", "replace").strip()[-400:]
         raise RuntimeError(f"MP3 conversion failed: {detail or process.returncode}")
-    os.replace(temporary, audio_path)
+    try:
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise RuntimeError("MP3 conversion produced no audio")
+        os.replace(temporary, audio_path)
+    except (OSError, RuntimeError):
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     return audio_path
 
 
@@ -313,6 +444,31 @@ def create_app(
             return
         audio_path = Path(job.audio_path)
         stage = "validating"
+
+        def is_canceled() -> bool:
+            current = store.get_voice_job(job.id)
+            return current is not None and current.status == "canceled"
+
+        async def cancel_codex_job_if_needed(codex_job_id: str) -> None:
+            """Stop a remote Codex turn when the local voice job is canceled.
+
+            Cancellation can race with ``start_turn``: the device may cancel
+            the queue item while the App Server is still accepting the turn.
+            In that case the local job must remain canceled, but the remote
+            turn should not continue consuming work or produce an orphaned
+            response.  Best-effort cancellation is intentional here because a
+            transport failure must not turn a user-requested cancellation into
+            a failed voice job.
+            """
+            if not codex_job_id:
+                return
+            try:
+                # Cancellation is best effort, but it must not hold the
+                # single voice worker behind a dead App Server transport.
+                await asyncio.wait_for(codex.cancel_job(codex_job_id), timeout=5)
+            except Exception:
+                return
+
         try:
             if not audio_path.is_file():
                 raise RuntimeError("Audio file is missing from gateway spool")
@@ -325,7 +481,7 @@ def create_app(
                 attempts=job.attempts + 1,
             )
             wav_metadata = _validate_wav(audio_path)
-            if store.get_voice_job(job.id).status == "canceled":  # type: ignore[union-attr]
+            if is_canceled():
                 return
 
             transcript = job.transcript
@@ -335,10 +491,11 @@ def create_app(
                 transcript = await transcriber.transcribe(
                     audio_path, job.original_filename
                 )
+                if is_canceled():
+                    return
                 store.update_voice_job(job.id, transcript=transcript, progress=55)
 
-            current = store.get_voice_job(job.id)
-            if current and current.status == "canceled":
+            if is_canceled():
                 return
 
             title = job.title
@@ -347,6 +504,8 @@ def create_app(
                 stage = "titling"
                 store.update_voice_job(job.id, stage=stage, progress=60)
                 title = _safe_title(await formatter.title(transcript))
+                if is_canceled():
+                    return
             if not suggested_filename:
                 suggested_filename = _suggested_recording_filename(title)
                 store.update_voice_job(
@@ -354,6 +513,8 @@ def create_app(
                     title=title,
                     suggested_filename=suggested_filename,
                 )
+                if is_canceled():
+                    return
 
             note_path: Path | None = Path(job.note_path) if job.note_path else None
             formatted = job.formatted
@@ -367,6 +528,8 @@ def create_app(
                             await formatter.format(transcript, profile.instruction)
                             or ""
                         )
+                        if is_canceled():
+                            return
                         store.update_voice_job(job.id, formatted=formatted)
                     stage = "saving"
                     store.update_voice_job(job.id, stage=stage, progress=78)
@@ -382,10 +545,11 @@ def create_app(
                         wav=wav_metadata,
                         profile_id=job.profile,
                     )
+                    if is_canceled():
+                        return
                 store.update_voice_job(job.id, note_path=str(note_path), progress=85)
 
-            current = store.get_voice_job(job.id)
-            if current and current.status == "canceled":
+            if is_canceled():
                 return
 
             codex_job_id = job.codex_job_id
@@ -393,9 +557,15 @@ def create_app(
                 stage = "sending_codex"
                 store.update_voice_job(job.id, stage=stage, progress=90)
                 codex_job = await codex.start_turn(job.thread_id, transcript)
+                if is_canceled():
+                    await cancel_codex_job_if_needed(codex_job.id)
+                    return
                 codex_job_id = codex_job.id
                 store.update_voice_job(job.id, codex_job_id=codex_job_id)
 
+            if is_canceled():
+                await cancel_codex_job_if_needed(codex_job_id)
+                return
             existing_delivery = store.find_delivery(job.route_key)
             if not existing_delivery:
                 store.add_delivery(
@@ -407,7 +577,7 @@ def create_app(
                     transcript=transcript,
                     job_id=codex_job_id,
                 )
-            store.update_voice_job(
+            store.update_voice_job_unless_canceled(
                 job.id,
                 status="completed",
                 stage="completed",
@@ -426,6 +596,9 @@ def create_app(
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            current = store.get_voice_job(job_id)
+            if current and current.status == "canceled":
+                return
             store.update_voice_job(
                 job_id,
                 status="failed",
@@ -561,7 +734,7 @@ def create_app(
         profile = x_voice_profile.strip().lower() or "default"
         if not SAFE_PROFILE.fullmatch(profile):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid voice profile")
-        content_length = int(request.headers.get("content-length", "0") or 0)
+        content_length = _content_length(request)
         if content_length <= 44 or content_length > settings.max_upload_bytes:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size"
@@ -605,17 +778,35 @@ def create_app(
             job_id = uuid.uuid4().hex
             audio_path = settings.spool_root / f"{job_id}.wav"
             os.replace(temporary_path, audio_path)
-            job = store.create_voice_job(
-                job_id=job_id,
-                route_key=route_key,
-                digest=sha256,
-                original_filename=filename,
-                device_name=device_name,
-                destination=destination,
-                thread_id=thread_id,
-                profile=profile,
-                audio_path=audio_path,
-            )
+            try:
+                job = store.create_voice_job(
+                    job_id=job_id,
+                    route_key=route_key,
+                    digest=sha256,
+                    original_filename=filename,
+                    device_name=device_name,
+                    destination=destination,
+                    thread_id=thread_id,
+                    profile=profile,
+                    audio_path=audio_path,
+                )
+            except sqlite3.IntegrityError:
+                # Two retries can pass the read-before-insert check together.
+                # The route key is the idempotency boundary, so return the
+                # winner instead of exposing SQLite's UNIQUE constraint as a
+                # gateway 500 (which makes the Cardputer retry indefinitely).
+                audio_path.unlink(missing_ok=True)
+                existing = store.find_voice_job_by_route(route_key)
+                if existing is None:
+                    raise
+                return JSONResponse(
+                    status_code=(
+                        status.HTTP_200_OK
+                        if existing.status == "completed"
+                        else status.HTTP_202_ACCEPTED
+                    ),
+                    content=existing.public(include_transcript=False),
+                )
             work_event.set()
             return JSONResponse(
                 status_code=status.HTTP_202_ACCEPTED,
@@ -631,7 +822,11 @@ def create_app(
         x_device_token: str = Header(default=""),
     ) -> dict[str, Any]:
         _require_token(x_device_token, settings.device_token)
-        jobs = store.list_voice_jobs(device_name=device_name, limit=limit)
+        # Keep a malformed/overly large UI request from forcing an unbounded
+        # SQLite query or a huge JSON response on the small device.
+        jobs = store.list_voice_jobs(
+            device_name=device_name, limit=max(1, min(limit, 100))
+        )
         return {"data": [job.public(include_transcript=False) for job in jobs]}
 
     @app.post("/v1/voice/jobs/retry-failed", status_code=202)
@@ -754,7 +949,7 @@ def create_app(
         x_device_name: str = Header(default="cardputer-adv"),
     ) -> JSONResponse:
         _require_token(x_device_token, settings.device_token)
-        content_length = int(request.headers.get("content-length", "0") or 0)
+        content_length = _content_length(request)
         if content_length <= 44 or content_length > settings.max_upload_bytes:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size"
@@ -795,20 +990,26 @@ def create_app(
                 )
 
             wav_metadata = _validate_wav(temporary_path)
-            transcript = await transcriber.transcribe(temporary_path, filename)
-            formatted = await formatter.format(transcript)
-            title = _safe_title(await formatter.title(transcript))
-            note_path = await _create_note_with_audio(
-                settings,
-                wav_path=temporary_path,
-                digest=sha256,
-                original_filename=filename,
-                device_name=device_name,
-                transcript=transcript,
-                formatted=formatted,
-                title=title,
-                wav=wav_metadata,
-            )
+            try:
+                transcript = await transcriber.transcribe(temporary_path, filename)
+                formatted = await formatter.format(transcript)
+                title = _safe_title(await formatter.title(transcript))
+            except VOICE_PROCESSING_ERRORS as error:
+                raise _voice_processing_http_error(error) from error
+            try:
+                note_path = await _create_note_with_audio(
+                    settings,
+                    wav_path=temporary_path,
+                    digest=sha256,
+                    original_filename=filename,
+                    device_name=device_name,
+                    transcript=transcript,
+                    formatted=formatted,
+                    title=title,
+                    wav=wav_metadata,
+                )
+            except VOICE_PROCESSING_ERRORS as error:
+                raise _voice_processing_http_error(error) from error
             stored = store.add(
                 digest=sha256,
                 original_filename=filename,
@@ -858,7 +1059,7 @@ def create_app(
         if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(thread_id):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Codex thread is required")
 
-        content_length = int(request.headers.get("content-length", "0") or 0)
+        content_length = _content_length(request)
         if content_length <= 44 or content_length > settings.max_upload_bytes:
             raise HTTPException(
                 status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Invalid upload size"
@@ -902,26 +1103,35 @@ def create_app(
                 )
 
             wav_metadata = _validate_wav(temporary_path)
-            transcript = await transcriber.transcribe(temporary_path, filename)
-            title = _safe_title(await formatter.title(transcript))
+            try:
+                transcript = await transcriber.transcribe(temporary_path, filename)
+                title = _safe_title(await formatter.title(transcript))
+            except VOICE_PROCESSING_ERRORS as error:
+                raise _voice_processing_http_error(error) from error
             note_path: Path | None = None
             if destination in {"note", "both"}:
                 existing_note = store.find(sha256)
                 if existing_note:
                     note_path = Path(existing_note.note_path)
                 else:
-                    formatted = await formatter.format(transcript)
-                    note_path = await _create_note_with_audio(
-                        settings,
-                        wav_path=temporary_path,
-                        digest=sha256,
-                        original_filename=filename,
-                        device_name=device_name,
-                        transcript=transcript,
-                        formatted=formatted,
-                        title=title,
-                        wav=wav_metadata,
-                    )
+                    try:
+                        formatted = await formatter.format(transcript)
+                    except VOICE_PROCESSING_ERRORS as error:
+                        raise _voice_processing_http_error(error) from error
+                    try:
+                        note_path = await _create_note_with_audio(
+                            settings,
+                            wav_path=temporary_path,
+                            digest=sha256,
+                            original_filename=filename,
+                            device_name=device_name,
+                            transcript=transcript,
+                            formatted=formatted,
+                            title=title,
+                            wav=wav_metadata,
+                        )
+                    except VOICE_PROCESSING_ERRORS as error:
+                        raise _voice_processing_http_error(error) from error
                     store.add(
                         digest=sha256,
                         original_filename=filename,
@@ -934,10 +1144,8 @@ def create_app(
             if destination in {"codex", "both"}:
                 try:
                     job = await codex.start_turn(thread_id, transcript)
-                except (RuntimeError, ValueError) as error:
-                    raise HTTPException(
-                        status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
-                    ) from error
+                except VOICE_PROCESSING_ERRORS as error:
+                    raise _voice_processing_http_error(error) from error
                 job_id = job.id
             stored = store.add_delivery(
                 route_key=route_key,
@@ -970,11 +1178,10 @@ def create_app(
         _require_token(x_device_token, settings.device_token)
         try:
             threads = await codex.list_threads(limit)
-        except RuntimeError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
-            ) from error
-        return {"data": [_thread_summary(thread) for thread in threads]}
+            summaries = [_thread_summary(thread) for thread in threads]
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
+        return {"data": summaries}
 
     @app.post("/v1/codex/chats")
     async def create_codex_chat(
@@ -988,11 +1195,9 @@ def create_app(
             )
         try:
             thread = await codex.start_thread(cwd)
-        except RuntimeError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
-            ) from error
-        return _thread_summary(thread)
+            return _thread_summary(thread)
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
 
     @app.get("/v1/codex/chats/{thread_id}")
     async def codex_chat(
@@ -1003,12 +1208,10 @@ def create_app(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid thread id")
         try:
             thread = await codex.read_thread(thread_id)
-        except RuntimeError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
-            ) from error
-        result = _thread_summary(thread)
-        result["messages"] = _thread_messages(thread)
+            result = _thread_summary(thread)
+            result["messages"] = _thread_messages(thread)
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
         return result
 
     @app.get("/v1/codex/chats/{thread_id}/speech")
@@ -1041,10 +1244,8 @@ def create_app(
                     for item in messages
                 )
             audio = await speech.synthesize(text)
-        except RuntimeError as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
-            ) from error
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
         return Response(
             content=audio,
             media_type="audio/wav",
@@ -1065,10 +1266,8 @@ def create_app(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid thread id")
         try:
             job = await codex.start_turn(thread_id, body.text)
-        except (RuntimeError, ValueError) as error:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, str(error)
-            ) from error
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
         return job.public()
 
     @app.get("/v1/codex/jobs/{job_id}")
@@ -1095,6 +1294,8 @@ def create_app(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
         except KeyError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
         return job.public()
 
     @app.post("/v1/codex/jobs/{job_id}/cancel")
@@ -1106,6 +1307,8 @@ def create_app(
             job = await codex.cancel_job(job_id)
         except KeyError as error:
             raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+        except VOICE_PROCESSING_ERRORS as error:
+            raise _voice_processing_http_error(error) from error
         return job.public()
 
     return app

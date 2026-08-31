@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import io
+import shlex
+import sqlite3
 import wave
 from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import HTTPException
 
 from voice_gateway.agent import AgentFormatter
-from voice_gateway.app import create_app
-from voice_gateway.codex import CodexApproval, CodexJob
+from voice_gateway.app import _validate_wav, create_app
+from voice_gateway.codex import CodexAppServer, CodexApproval, CodexJob
 from voice_gateway.config import Settings
 from voice_gateway.speech import SpeechSynthesizer
 from voice_gateway.transcription import Transcriber
@@ -19,6 +23,7 @@ class FakeCodex:
     def __init__(self) -> None:
         self.jobs: dict[str, CodexJob] = {}
         self.messages: list[tuple[str, str]] = []
+        self.canceled_jobs: list[str] = []
 
     async def list_threads(self, limit: int = 10) -> list[dict]:
         return [
@@ -74,6 +79,7 @@ class FakeCodex:
         return job
 
     async def cancel_job(self, job_id: str) -> CodexJob:
+        self.canceled_jobs.append(job_id)
         job = self.jobs[job_id]
         job.status = "interrupted"
         return job
@@ -128,6 +134,24 @@ async def test_whisper_server_splits_long_wav_in_order(
         ("REC0001.part-002.wav", 1000),
         ("REC0001.part-003.wav", 500),
     ]
+
+
+@pytest.mark.asyncio
+async def test_whisper_server_rejects_non_positive_chunk_size(
+    settings: Settings, tmp_path: Path
+) -> None:
+    wav_path = tmp_path / "short.wav"
+    wav_path.write_bytes(wav_bytes())
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "transcription_provider": "whisper-server",
+            "whisper_server_chunk_seconds": 0,
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="positive integer"):
+        await Transcriber(configured).transcribe(wav_path, "REC0009.WAV")
 
 
 @pytest.fixture
@@ -203,6 +227,40 @@ async def test_upload_exports_mp3_and_embeds_it_in_note(
 
 
 @pytest.mark.asyncio
+async def test_upload_reports_empty_mp3_export(
+    settings: Settings, tmp_path: Path
+) -> None:
+    fake_ffmpeg = tmp_path / "fake-ffmpeg"
+    fake_ffmpeg.write_text(
+        "#!/bin/sh\nfor output do :; done\n: > \"$output\"\n",
+        encoding="utf-8",
+    )
+    fake_ffmpeg.chmod(0o755)
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "audio_export_format": "mp3",
+            "ffmpeg_executable": str(fake_ffmpeg),
+        }
+    )
+    app = create_app(configured)
+    transport = httpx.ASGITransport(app=app)
+    audio = wav_bytes()
+    headers = {
+        "X-Device-Token": configured.device_token,
+        "X-Voice-Filename": "REC-EMPTY-MP3.WAV",
+        "Content-Type": "audio/wav",
+        "Content-Length": str(len(audio)),
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/voice-notes", content=audio, headers=headers)
+
+    assert response.status_code == 503
+    assert "produced no audio" in response.json()["detail"]
+    assert not list(configured.vault_root.rglob("*.mp3"))
+
+
+@pytest.mark.asyncio
 async def test_rejects_wrong_token(settings: Settings) -> None:
     app = create_app(settings)
     transport = httpx.ASGITransport(app=app)
@@ -217,6 +275,42 @@ async def test_rejects_wrong_token(settings: Settings) -> None:
             },
         )
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_rejects_malformed_content_length_without_server_error(
+    settings: Settings,
+) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/voice-notes",
+            content=wav_bytes(),
+            headers={
+                "X-Device-Token": settings.device_token,
+                "Content-Length": "not-a-number",
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid Content-Length"
+
+
+def test_validate_wav_maps_os_errors_to_client_error(settings: Settings) -> None:
+    missing = settings.spool_root / "missing.wav"
+    with pytest.raises(HTTPException) as error:
+        _validate_wav(missing)
+    assert error.value.status_code == 415
+
+
+def test_validate_wav_rejects_truncated_pcm_data(settings: Settings) -> None:
+    truncated = settings.spool_root / "truncated.wav"
+    truncated.parent.mkdir(parents=True, exist_ok=True)
+    truncated.write_bytes(wav_bytes()[:-1])
+    with pytest.raises(HTTPException) as error:
+        _validate_wav(truncated)
+    assert error.value.status_code == 415
+    assert error.value.detail == "Truncated WAV audio"
 
 
 @pytest.mark.asyncio
@@ -280,13 +374,42 @@ def test_speech_cleanup_makes_markdown_readable(settings: Settings) -> None:
     )
 
 
+def test_formatter_rejects_malformed_chat_completion() -> None:
+    response = httpx.Response(200, json={"choices": [{"message": {}}]})
+    with pytest.raises(RuntimeError, match="empty text"):
+        AgentFormatter._response_text(response, "Transcript formatter")
+
+
+def test_speech_http_error_handles_non_object_json() -> None:
+    response = httpx.Response(502, json=["upstream unavailable"])
+    assert SpeechSynthesizer._http_error(response) == (
+        "HTTP 502: ['upstream unavailable']"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [([], "invalid response"), ({"text": 42}, "invalid transcript text")],
+)
+def test_transcriber_rejects_malformed_provider_response(
+    payload: object, message: str
+) -> None:
+    response = httpx.Response(200, json=payload)
+    with pytest.raises(RuntimeError, match=message):
+        Transcriber._response_text(response, "Whisper server")
+
+
 @pytest.mark.asyncio
 async def test_elevenlabs_speech_resolves_named_voice_and_caches_wav(
     settings: Settings, tmp_path: Path
 ) -> None:
+    expected_wav = wav_bytes()
+    fixture = tmp_path / "tts-output.wav"
+    fixture.write_bytes(expected_wav)
     fake_ffmpeg = tmp_path / "fake-ffmpeg"
     fake_ffmpeg.write_text(
-        "#!/bin/sh\nfor output do :; done\nprintf 'RIFFmock-wave' > \"$output\"\n",
+        "#!/bin/sh\nfor output do :; done\n"
+        f"cp {shlex.quote(str(fixture))} \"$output\"\n",
         encoding="utf-8",
     )
     fake_ffmpeg.chmod(0o755)
@@ -320,9 +443,124 @@ async def test_elevenlabs_speech_resolves_named_voice_and_caches_wav(
     first = await speech.synthesize("**Готово.**")
     second = await speech.synthesize("**Готово.**")
 
-    assert first == b"RIFFmock-wave"
+    assert first == expected_wav
     assert second == first
     assert requests == ["/v2/voices", "/v1/text-to-speech/jarvisvoice123456789"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_tts_requests_share_one_cache_fill(
+    settings: Settings, tmp_path: Path
+) -> None:
+    expected_wav = wav_bytes()
+    fixture = tmp_path / "tts-output.wav"
+    fixture.write_bytes(expected_wav)
+    fake_ffmpeg = tmp_path / "fake-ffmpeg"
+    fake_ffmpeg.write_text(
+        "#!/bin/sh\nfor output do :; done\n"
+        f"cp {shlex.quote(str(fixture))} \"$output\"\n",
+        encoding="utf-8",
+    )
+    fake_ffmpeg.chmod(0o755)
+    requests: list[str] = []
+
+    def elevenlabs(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/v2/voices":
+            return httpx.Response(
+                200,
+                json={"voices": [{"voice_id": "jarvisvoice123456789", "name": "Jarvis"}]},
+            )
+        return httpx.Response(200, content=b"ID3-elevenlabs-audio")
+
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "tts_enabled": True,
+            "tts_provider": "elevenlabs",
+            "elevenlabs_api_key": "test-elevenlabs-key",
+            "elevenlabs_voice": "Jarvis",
+            "ffmpeg_executable": str(fake_ffmpeg),
+        }
+    )
+    speech = SpeechSynthesizer(configured, httpx.MockTransport(elevenlabs))
+    first, second = await asyncio.gather(
+        speech.synthesize("same response"), speech.synthesize("same response")
+    )
+
+    assert first == second == expected_wav
+    assert requests == ["/v2/voices", "/v1/text-to-speech/jarvisvoice123456789"]
+
+
+@pytest.mark.asyncio
+async def test_tts_rejects_invalid_converter_output(
+    settings: Settings, tmp_path: Path
+) -> None:
+    fake_ffmpeg = tmp_path / "fake-ffmpeg"
+    fake_ffmpeg.write_text(
+        "#!/bin/sh\nfor output do :; done\nprintf 'not-a-wav' > \"$output\"\n",
+        encoding="utf-8",
+    )
+    fake_ffmpeg.chmod(0o755)
+
+    def elevenlabs(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/voices":
+            return httpx.Response(
+                200,
+                json={"voices": [{"voice_id": "jarvisvoice123456789", "name": "Jarvis"}]},
+            )
+        return httpx.Response(200, content=b"ID3-elevenlabs-audio")
+
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "tts_enabled": True,
+            "tts_provider": "elevenlabs",
+            "elevenlabs_api_key": "test-elevenlabs-key",
+            "elevenlabs_voice": "Jarvis",
+            "ffmpeg_executable": str(fake_ffmpeg),
+        }
+    )
+    speech = SpeechSynthesizer(configured, httpx.MockTransport(elevenlabs))
+
+    with pytest.raises(RuntimeError, match="invalid WAV"):
+        await speech.synthesize("broken output")
+    assert not list((configured.spool_root / "tts-cache").glob("*.wav"))
+
+
+def test_tts_wav_validation_rejects_truncated_pcm_data() -> None:
+    assert not SpeechSynthesizer._is_valid_wav(wav_bytes()[:-1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"voices": {"voice_id": "not-a-list"}},
+        {"voices": ["not-a-voice"]},
+    ],
+)
+async def test_tts_rejects_malformed_voice_lookup_payload(
+    settings: Settings, payload: object
+) -> None:
+    def elevenlabs(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/voices"
+        return httpx.Response(200, json=payload)
+
+    configured = Settings(
+        **{
+            **settings.__dict__,
+            "tts_enabled": True,
+            "tts_provider": "elevenlabs",
+            "elevenlabs_api_key": "test-elevenlabs-key",
+            "elevenlabs_voice": "Jarvis",
+        }
+    )
+    speech = SpeechSynthesizer(configured, httpx.MockTransport(elevenlabs))
+
+    with pytest.raises(RuntimeError, match="invalid voice data"):
+        await speech._elevenlabs_voice_id()
 
 
 def test_title_fallback_is_readable_and_bounded(settings: Settings) -> None:
@@ -377,6 +615,106 @@ async def test_codex_chat_list_read_and_message(settings: Settings) -> None:
     assert sent.status_code == 202
     assert sent.json()["id"] == "job1"
     assert codex.messages == [("thread_12345678", "Run tests")]
+
+
+@pytest.mark.asyncio
+async def test_codex_rpc_reader_survives_malformed_lines_and_errors() -> None:
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.lines = [
+                b"[]\n",
+                b'{"id": 1, "error": ["bad response"]}\n',
+            ]
+
+        async def readline(self) -> bytes:
+            return self.lines.pop(0) if self.lines else b""
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+    server = CodexAppServer()
+    server.process = FakeProcess()  # type: ignore[assignment]
+    future = asyncio.get_running_loop().create_future()
+    server.pending[1] = future
+
+    await server._read_stdout()
+
+    with pytest.raises(RuntimeError, match="invalid error"):
+        await future
+
+
+@pytest.mark.asyncio
+async def test_codex_shutdown_fails_pending_jobs_and_requests() -> None:
+    server = CodexAppServer()
+    future = asyncio.get_running_loop().create_future()
+    server.pending[1] = future
+    job = CodexJob(
+        id="job-running",
+        thread_id="thread_12345678",
+        turn_id="turn-1",
+        status="in_progress",
+    )
+    server.jobs[job.id] = job
+
+    await server._shutdown_process("Codex App Server stopped")
+
+    with pytest.raises(RuntimeError, match="stopped"):
+        await future
+    assert job.status == "failed"
+    assert job.error == "Codex App Server stopped"
+    assert not server.pending
+
+
+@pytest.mark.asyncio
+async def test_codex_cancel_before_turn_start_is_local_and_idempotent() -> None:
+    server = CodexAppServer()
+    job = CodexJob(
+        id="job-starting",
+        thread_id="thread_12345678",
+        status="starting",
+    )
+    server.jobs[job.id] = job
+    server.starting_thread_jobs[job.thread_id] = job.id
+
+    canceled = await server.cancel_job(job.id)
+    repeated = await server.cancel_job(job.id)
+
+    assert canceled is repeated is job
+    assert job.status == "interrupted"
+    assert job.error == "Canceled before turn started"
+    assert not server.starting_thread_jobs
+
+
+@pytest.mark.asyncio
+async def test_codex_endpoints_return_503_for_malformed_thread_payload(
+    settings: Settings,
+) -> None:
+    class MalformedCodex(FakeCodex):
+        async def list_threads(self, limit: int = 10) -> list[dict]:
+            del limit
+            return ["not-a-thread"]  # type: ignore[list-item]
+
+        async def read_thread(self, thread_id: str) -> dict:
+            return {"id": thread_id, "turns": "not-a-list"}
+
+    app = create_app(settings, MalformedCodex())
+    transport = httpx.ASGITransport(app=app)
+    headers = {"X-Device-Token": settings.device_token}
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        chats = await client.get("/v1/codex/chats", headers=headers)
+        chat = await client.get(
+            "/v1/codex/chats/thread_12345678", headers=headers
+        )
+        speech = await client.get(
+            "/v1/codex/chats/thread_12345678/speech", headers=headers
+        )
+
+    assert chats.status_code == 503
+    assert "invalid thread" in chats.json()["detail"]
+    assert chat.status_code == 503
+    assert "invalid thread turns" in chat.json()["detail"]
+    assert speech.status_code == 503
+    assert "invalid thread turns" in speech.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -503,6 +841,124 @@ async def test_async_voice_job_can_be_canceled_before_processing(
     assert canceled.status_code == 200
     assert canceled.json()["status"] == "canceled"
     assert processed == 0
+
+
+def test_voice_job_completion_cannot_resurrect_cancellation(settings: Settings) -> None:
+    app = create_app(settings)
+    store = app.state.store
+    audio_path = settings.spool_root / "race.wav"
+    job = store.create_voice_job(
+        job_id="race-job",
+        route_key="race-route",
+        digest="a" * 64,
+        original_filename="RACE.WAV",
+        device_name="test-cardputer",
+        destination="note",
+        thread_id="",
+        profile="default",
+        audio_path=audio_path,
+    )
+    store.update_voice_job(
+        job.id, status="canceled", stage="canceled", error="Canceled by device"
+    )
+
+    result = store.update_voice_job_unless_canceled(
+        job.id,
+        status="completed",
+        stage="completed",
+        progress=100,
+        error="",
+    )
+
+    assert result.status == "canceled"
+    assert result.stage == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_async_voice_job_retries_are_idempotent_on_insert_race(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    audio = wav_bytes()
+    headers = {
+        "X-Device-Token": settings.device_token,
+        "X-Voice-Filename": "REC0008.WAV",
+        "X-Voice-Destination": "note",
+        "Content-Type": "audio/wav",
+        "Content-Length": str(len(audio)),
+    }
+    store = app.state.store
+    real_find = store.find_voice_job_by_route
+    real_create = store.create_voice_job
+    reads = 0
+
+    def hide_first_read(route_key: str):
+        nonlocal reads
+        reads += 1
+        return None if reads == 1 else real_find(route_key)
+
+    def create_winner_then_report_conflict(**kwargs):
+        winner_audio = settings.spool_root / "winner.wav"
+        winner_audio.write_bytes(audio)
+        winner_kwargs = {**kwargs, "job_id": "winner-job", "audio_path": winner_audio}
+        real_create(**winner_kwargs)
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: voice_jobs.route_key")
+
+    monkeypatch.setattr(store, "find_voice_job_by_route", hide_first_read)
+    monkeypatch.setattr(store, "create_voice_job", create_winner_then_report_conflict)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/voice/jobs", content=audio, headers=headers)
+
+    assert response.status_code == 202
+    assert response.json()["id"] == "winner-job"
+    assert (settings.spool_root / "winner.wav").exists()
+    assert len(list(settings.spool_root.glob("*.wav"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_async_voice_job_cancels_remote_codex_turn_after_race(
+    settings: Settings,
+) -> None:
+    class BlockingCodex(FakeCodex):
+        def __init__(self) -> None:
+            super().__init__()
+            self.turn_started = asyncio.Event()
+            self.release_turn = asyncio.Event()
+
+        async def start_turn(self, thread_id: str, text: str) -> CodexJob:
+            self.turn_started.set()
+            await self.release_turn.wait()
+            return await super().start_turn(thread_id, text)
+
+    codex = BlockingCodex()
+    app = create_app(settings, codex)
+    transport = httpx.ASGITransport(app=app)
+    audio = wav_bytes()
+    headers = {
+        "X-Device-Token": settings.device_token,
+        "X-Voice-Filename": "REC0007.WAV",
+        "X-Voice-Destination": "codex",
+        "X-Codex-Thread-ID": "thread_12345678",
+        "Content-Type": "audio/wav",
+        "Content-Length": str(len(audio)),
+    }
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        accepted = await client.post("/v1/voice/jobs", content=audio, headers=headers)
+        job_id = accepted.json()["id"]
+        processing = asyncio.create_task(app.state.process_pending_voice_jobs())
+        await codex.turn_started.wait()
+        canceled = await client.post(
+            f"/v1/voice/jobs/{job_id}/cancel", headers=headers
+        )
+        codex.release_turn.set()
+        await processing
+        result = await client.get(f"/v1/voice/jobs/{job_id}", headers=headers)
+
+    assert canceled.status_code == 200
+    assert result.json()["status"] == "canceled"
+    assert codex.canceled_jobs == ["job1"]
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@
 #include <WiFiClientSecure.h>
 #include <atomic>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <vector>
 
@@ -208,6 +209,9 @@ private:
                    String& caPem);
     void rememberHttpResult(const char* operation, int code,
                             const String& responseBody = "");
+    void setGatewayDiagnostic(const String& diagnostic);
+    void lockState() const;
+    void unlockState() const;
     void addAuthHeaders(HTTPClient& http);
     static const char* destinationText(Destination destination);
     static const char* authModeText(wifi_auth_mode_t authMode);
@@ -215,24 +219,24 @@ private:
 
     StorageService* storage_ = nullptr;
     Config config_;
-    Status status_ = Status::kDisabled;
-    unsigned long nextActionMs_ = 0;
-    unsigned long nextFailedPollMs_ = 0;
-    unsigned long connectStartedMs_ = 0;
+    std::atomic<Status> status_{Status::kDisabled};
+    std::atomic<unsigned long> nextActionMs_{0};
+    std::atomic<unsigned long> nextFailedPollMs_{0};
+    std::atomic<unsigned long> connectStartedMs_{0};
     std::size_t activeNetworkIndex_ = 0;
     std::size_t activeVoiceProfileIndex_ = 0;
     std::atomic<std::uint16_t> lastDisconnectReason_{0};
     String lastWifiScanDiagnostic_ = "NOT RUN";
     std::vector<WifiScanResult> lastScanResults_;
     String pendingManualSsid_;
-    std::uint16_t lastHttpStatus_ = 0;
-    int lastHttpCode_ = 0;
+    std::atomic<std::uint16_t> lastHttpStatus_{0};
+    std::atomic<int> lastHttpCode_{0};
     String lastGatewayDiagnostic_ = "NOT CHECKED";
     GatewayServices gatewayServices_;
     String activeUploadName_;
     String backgroundUploadPath_;
     String backgroundUploadName_;
-    std::uint32_t backgroundUploadSize_ = 0;
+    std::atomic<std::uint32_t> backgroundUploadSize_{0};
     std::atomic<bool> backgroundUploadActive_{false};
     std::atomic<std::uint32_t> backgroundUploadBytesSent_{0};
     std::atomic<std::uint32_t> backgroundUploadBytesTotal_{0};
@@ -240,6 +244,10 @@ private:
     String lastSubmittedJobId_;
     String lastSubmittedThreadId_;
     std::atomic<bool> recordingChanged_{false};
+    // HTTP uploads run on a FreeRTOS task while the UI reads status and
+    // diagnostics from the main loop.  Arduino String is not thread-safe, so
+    // protect the shared text fields (scalar progress fields remain atomic).
+    mutable SemaphoreHandle_t stateMutex_ = nullptr;
 };
 
 }  // namespace cardputer_recorder

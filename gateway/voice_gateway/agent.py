@@ -130,9 +130,27 @@ class AgentFormatter:
                     timeout=self.settings.codex_formatter_timeout_seconds,
                 )
             except TimeoutError as error:
-                process.kill()
-                await process.wait()
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except (TimeoutError, OSError):
+                    pass
                 raise RuntimeError("Codex transcript formatting timed out") from error
+            except asyncio.CancelledError:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except (TimeoutError, OSError):
+                    pass
+                raise
         if process.returncode != 0:
             detail = stderr.decode("utf-8", "replace").strip()[-600:]
             raise RuntimeError(f"Codex transcript formatting failed: {detail}")
@@ -169,7 +187,7 @@ class AgentFormatter:
                 json=payload,
             )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        return self._response_text(response, "Transcript formatter")
 
     async def _openai_title(self, transcript: str) -> str:
         headers = {"Content-Type": "application/json"}
@@ -198,7 +216,30 @@ class AgentFormatter:
                 json=payload,
             )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"].strip()
+        return self._response_text(response, "Title formatter")
+
+    @staticmethod
+    def _response_text(response: httpx.Response, provider: str) -> str:
+        """Extract a usable chat completion instead of leaking KeyError/TypeError."""
+        try:
+            payload = response.json()
+        except (ValueError, UnicodeError, TypeError) as error:
+            raise RuntimeError(f"{provider} returned invalid JSON") from error
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{provider} returned an invalid response")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError(f"{provider} returned no choices")
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise RuntimeError(f"{provider} returned an invalid choice")
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise RuntimeError(f"{provider} returned an invalid message")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(f"{provider} returned empty text")
+        return content.strip()
 
     @classmethod
     def _fallback_title(cls, transcript: str) -> str:

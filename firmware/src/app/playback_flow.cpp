@@ -186,7 +186,29 @@ void RecorderApp::togglePlaybackPause()
         return;
     }
 
-    playbackBaseElapsedMs_ = playbackElapsedMs();
+    // The reader is intentionally ahead of the audible position because two
+    // PCM blocks are queued in M5Unified.  Stop clears that queue, so seek
+    // back to the displayed position before marking playback paused; without
+    // this rewind, every pause/resume cycle silently skips the prefetched
+    // tail.
+    const std::uint32_t currentMs = playbackElapsedMs();
+    const std::uint32_t bytesPerSecond = playbackBytesPerSecond();
+    if (bytesPerSecond == 0) {
+        stopPlayback();
+        setError("Playback pause failed.");
+        return;
+    }
+    const std::uint32_t targetByteOffset = static_cast<std::uint32_t>(
+        static_cast<std::uint64_t>(currentMs) * bytesPerSecond / 1000);
+    audio_.stop();
+    if (!reader_.seekDataByteOffset(targetByteOffset)) {
+        stopPlayback();
+        setError("Playback pause failed.");
+        return;
+    }
+    playbackBufferIndex_ = 0;
+    playbackBaseElapsedMs_ = currentMs;
+    operationStartedMs_ = millis();
     playbackPaused_ = true;
     message_ = "Playback paused.";
     forceRedraw_ = true;

@@ -235,6 +235,11 @@ private:
     unsigned long lastCodexPollMs_ = 0;
     std::atomic<std::uint8_t> codexSpeechState_{0};
     bool codexSpeechConversation_ = false;
+    // Snapshot the selected chat before the TTS task starts.  The user can
+    // leave the conversation while the network request is in flight; reading
+    // selectedCodexThreadId_ directly from the task would race with opening a
+    // different chat and could request/play the wrong response.
+    String codexSpeechThreadId_;
     UploadService::Destination recordingDestination_ =
         UploadService::Destination::kNote;
     String recordingThreadId_;

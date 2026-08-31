@@ -44,6 +44,12 @@ bool AudioService::startCapture(const AudioFormat& format)
     // before the first ADC start after boot.
     M5Cardputer.Speaker.setVolume(0);
     if (!M5Cardputer.Speaker.begin()) {
+        // Speaker::begin enables the codec before setting up I2S.  When I2S
+        // setup fails, explicitly tear that state down so a partial start
+        // cannot leave the DAC callback (and its audible buzz) behind.
+        M5Cardputer.Speaker.stop();
+        setCodecOutputMuted(true);
+        M5Cardputer.Speaker.end();
         state_ = ServiceState::kError;
         error_ = ErrorCode::kInitializationFailed;
         return false;
@@ -61,6 +67,10 @@ bool AudioService::startCapture(const AudioFormat& format)
     M5Cardputer.Mic.config(micConfig);
 
     if (!M5Cardputer.Mic.begin()) {
+        // Mic::begin follows the same callback-before-I2S order as Speaker;
+        // quiet the codec on this partial-start path as well.
+        setCodecOutputMuted(true);
+        M5Cardputer.Mic.end();
         state_ = ServiceState::kError;
         error_ = ErrorCode::kInitializationFailed;
         return false;
@@ -114,7 +124,9 @@ bool AudioService::startPlayback(std::uint8_t volume)
     speakerConfig.magnification = 32;
     M5Cardputer.Speaker.config(speakerConfig);
     if (!M5Cardputer.Speaker.begin()) {
+        M5Cardputer.Speaker.stop();
         setCodecOutputMuted(true);
+        M5Cardputer.Speaker.end();
         state_ = ServiceState::kError;
         error_ = ErrorCode::kInitializationFailed;
         return false;
@@ -215,9 +227,10 @@ ErrorCode AudioService::lastError() const
 void AudioService::stopCapture()
 {
     const bool wasRunning = M5Cardputer.Mic.isRunning();
-    if (wasRunning) {
-        setCodecOutputMuted(true);
-    }
+    // Mute before tearing down the mic even when M5Unified reports a partial
+    // start.  Mic::begin enables the codec before I2S setup, so a failed or
+    // already-stopped capture can otherwise leave the DAC audible.
+    setCodecOutputMuted(true);
     M5Cardputer.Mic.end();
     delay(30);
 

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
+import os
 import re
 import shutil
 import tempfile
+import uuid
+import wave
 from pathlib import Path
 from urllib.parse import quote
 
@@ -27,6 +31,12 @@ class SpeechSynthesizer:
         self.cache_root = settings.spool_root / "tts-cache"
         self.transport = transport
         self._resolved_elevenlabs_voice_id = ""
+        # A cache miss can be served by several Cardputer requests at once
+        # (for example, when a user retries Read).  Serialise cache misses so
+        # we do not synthesize the same response repeatedly, while the unique
+        # temporary path below also keeps an interrupted writer from exposing
+        # a partial WAV to another request.
+        self._cache_lock = asyncio.Lock()
 
     def status(self) -> dict[str, str]:
         if not self.settings.tts_enabled:
@@ -89,54 +99,132 @@ class SpeechSynthesizer:
         self.cache_root.mkdir(parents=True, exist_ok=True)
         cached = self.cache_root / f"{digest}.wav"
         if cached.is_file():
-            return cached.read_bytes()
+            data = self._read_cached_wav(cached)
+            if data:
+                return data
 
-        with tempfile.TemporaryDirectory(
-            prefix="cardputer-tts-", dir=self.settings.spool_root
-        ) as temporary_name:
-            temporary = Path(temporary_name)
-            wav = temporary / "speech.wav"
-            if self.settings.tts_provider == "elevenlabs":
-                audio = temporary / "speech.mp3"
-                audio.write_bytes(await self._synthesize_elevenlabs(cleaned))
-            else:
-                source = temporary / "speech.txt"
-                audio = temporary / "speech.aiff"
-                source.write_text(cleaned, encoding="utf-8")
+        async with self._cache_lock:
+            # Another request may have filled the cache while this request
+            # waited for the lock.
+            if cached.is_file():
+                data = self._read_cached_wav(cached)
+                if data:
+                    return data
+
+            with tempfile.TemporaryDirectory(
+                prefix="cardputer-tts-", dir=self.settings.spool_root
+            ) as temporary_name:
+                temporary = Path(temporary_name)
+                wav = temporary / "speech.wav"
+                if self.settings.tts_provider == "elevenlabs":
+                    audio = temporary / "speech.mp3"
+                    audio.write_bytes(await self._synthesize_elevenlabs(cleaned))
+                else:
+                    source = temporary / "speech.txt"
+                    audio = temporary / "speech.aiff"
+                    source.write_text(cleaned, encoding="utf-8")
+                    await self._run(
+                        self.settings.say_executable,
+                        "-v",
+                        self.settings.tts_voice,
+                        "-r",
+                        str(self.settings.tts_rate),
+                        "-f",
+                        str(source),
+                        "-o",
+                        str(audio),
+                    )
                 await self._run(
-                    self.settings.say_executable,
-                    "-v",
-                    self.settings.tts_voice,
-                    "-r",
-                    str(self.settings.tts_rate),
-                    "-f",
-                    str(source),
-                    "-o",
+                    self.settings.ffmpeg_executable,
+                    "-nostdin",
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
                     str(audio),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(wav),
                 )
-            await self._run(
-                self.settings.ffmpeg_executable,
-                "-nostdin",
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                str(audio),
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-c:a",
-                "pcm_s16le",
-                str(wav),
+                try:
+                    data = wav.read_bytes()
+                except OSError as error:
+                    raise RuntimeError("Text-to-speech produced no WAV output") from error
+                if not self._is_valid_wav(data):
+                    raise RuntimeError("Text-to-speech produced invalid WAV")
+
+            # The previous fixed ``.wav.tmp`` name allowed two requests to
+            # replace/remove each other's temporary file.  A unique sibling
+            # plus os.replace gives readers an all-or-nothing cache entry.
+            pending = self.cache_root / (
+                f".{cached.name}.{uuid.uuid4().hex}.tmp"
             )
-            data = wav.read_bytes()
-        pending = cached.with_suffix(".wav.tmp")
-        pending.write_bytes(data)
-        pending.replace(cached)
-        self._prune_cache()
-        return data
+            try:
+                pending.write_bytes(data)
+                os.replace(pending, cached)
+            except OSError:
+                # Caching is an optimisation; a full/read-only cache must not
+                # turn an otherwise valid speech response into a 503.
+                pending.unlink(missing_ok=True)
+            self._prune_cache()
+            return data
+
+    @classmethod
+    def _is_valid_wav(cls, data: bytes) -> bool:
+        """Accept only the PCM shape the Cardputer playback path supports."""
+        try:
+            with wave.open(io.BytesIO(data), "rb") as wav:
+                channels = wav.getnchannels()
+                sample_width = wav.getsampwidth()
+                frames = wav.getnframes()
+                if (
+                    channels != 1
+                    or sample_width != 2
+                    or not 8000 <= wav.getframerate() <= 48000
+                    or frames <= 0
+                ):
+                    return False
+                bytes_per_frame = channels * sample_width
+                expected_audio_bytes = frames * bytes_per_frame
+                read_audio_bytes = 0
+                remaining_frames = frames
+                while remaining_frames > 0:
+                    chunk = wav.readframes(min(remaining_frames, 4096))
+                    if not chunk or len(chunk) % bytes_per_frame != 0:
+                        return False
+                    read_audio_bytes += len(chunk)
+                    frames_read = len(chunk) // bytes_per_frame
+                    if frames_read == 0:
+                        return False
+                    remaining_frames -= frames_read
+                return (
+                    remaining_frames == 0
+                    and read_audio_bytes == expected_audio_bytes
+                )
+        except (wave.Error, EOFError, OSError, ValueError):
+            return False
+
+    @classmethod
+    def _read_cached_wav(cls, path: Path) -> bytes:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return b""
+        if cls._is_valid_wav(data):
+            return data
+        # A stale cache entry from an older gateway version must not be served
+        # to the device forever.  Failure to remove it is harmless; the next
+        # synthesis can still replace it atomically.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return b""
 
     async def _synthesize_elevenlabs(self, text: str) -> bytes:
         voice_id = await self._elevenlabs_voice_id()
@@ -198,9 +286,16 @@ class SpeechSynthesizer:
             detail = self._http_error(response)
             raise RuntimeError(f"ElevenLabs voice lookup failed: {detail}")
         try:
-            voices = response.json().get("voices", [])
-        except ValueError as error:
+            payload = response.json()
+        except (ValueError, UnicodeError, TypeError) as error:
             raise RuntimeError("ElevenLabs returned invalid voice data") from error
+        if not isinstance(payload, dict):
+            raise RuntimeError("ElevenLabs returned invalid voice data")
+        voices = payload.get("voices", [])
+        if not isinstance(voices, list):
+            raise RuntimeError("ElevenLabs returned invalid voice data")
+        if any(not isinstance(item, dict) for item in voices):
+            raise RuntimeError("ElevenLabs returned invalid voice data")
         match = next(
             (
                 item
@@ -209,19 +304,20 @@ class SpeechSynthesizer:
             ),
             None,
         )
-        if not match or not match.get("voice_id"):
+        voice_id = match.get("voice_id") if match else None
+        if not voice_id:
             raise RuntimeError(
                 f"ElevenLabs voice not found in this account: {configured}"
             )
-        self._resolved_elevenlabs_voice_id = str(match["voice_id"])
+        self._resolved_elevenlabs_voice_id = str(voice_id)
         return self._resolved_elevenlabs_voice_id
 
     @staticmethod
     def _http_error(response: httpx.Response) -> str:
         try:
             payload = response.json()
-            detail = payload.get("detail", payload)
-        except ValueError:
+            detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
+        except (ValueError, UnicodeError, TypeError):
             detail = response.text
         return f"HTTP {response.status_code}: {str(detail)[:300]}"
 
@@ -246,18 +342,41 @@ class SpeechSynthesizer:
         try:
             _, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
         except TimeoutError as error:
-            process.kill()
-            await process.wait()
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except (TimeoutError, OSError):
+                pass
             raise RuntimeError("Text-to-speech timed out") from error
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except (TimeoutError, OSError):
+                pass
+            raise
         if process.returncode != 0:
             detail = stderr.decode("utf-8", "replace").strip()[-400:]
             raise RuntimeError(f"Text-to-speech failed: {detail}")
 
     def _prune_cache(self) -> None:
-        cached = sorted(
-            self.cache_root.glob("*.wav"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-        for stale in cached[8:]:
-            stale.unlink(missing_ok=True)
+        entries: list[tuple[float, Path]] = []
+        for path in self.cache_root.glob("*.wav"):
+            try:
+                entries.append((path.stat().st_mtime, path))
+            except OSError:
+                continue
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for _, stale in entries[8:]:
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError:
+                continue

@@ -10,6 +10,8 @@
 #include <esp_wifi.h>
 #include <time.h>
 
+#include "recorder/media/wav_file.h"
+
 namespace cardputer_recorder {
 namespace {
 
@@ -154,9 +156,33 @@ std::size_t appendDnsLabel(std::uint8_t* packet, std::size_t offset,
 
 }  // namespace
 
+void UploadService::lockState() const
+{
+    if (stateMutex_ != nullptr) {
+        xSemaphoreTake(stateMutex_, portMAX_DELAY);
+    }
+}
+
+void UploadService::unlockState() const
+{
+    if (stateMutex_ != nullptr) {
+        xSemaphoreGive(stateMutex_);
+    }
+}
+
+void UploadService::setGatewayDiagnostic(const String& diagnostic)
+{
+    lockState();
+    lastGatewayDiagnostic_ = diagnostic;
+    unlockState();
+}
+
 void UploadService::begin(StorageService& storage)
 {
     storage_ = &storage;
+    if (stateMutex_ == nullptr) {
+        stateMutex_ = xSemaphoreCreateMutex();
+    }
     activeNetworkIndex_ = 0;
     WiFi.onEvent(
         [this](WiFiEvent_t, WiFiEventInfo_t info) {
@@ -237,11 +263,17 @@ void UploadService::update(bool ioAllowed)
     RecordingMetadata awaiting;
     if (findAwaitingJob(name, size, awaiting)) {
         status_ = Status::kUploading;
+        lockState();
         activeUploadName_ = name;
+        unlockState();
         const bool polled = pollVoiceJob(name, awaiting.voiceJobId, size);
+        lockState();
         activeUploadName_ = "";
+        unlockState();
         if (!polled) {
+            lockState();
             lastFailedUploadName_ = name;
+            unlockState();
             status_ = Status::kError;
             nextActionMs_ = millis() + kErrorRetryMs;
         } else {
@@ -260,11 +292,16 @@ void UploadService::update(bool ioAllowed)
         return;
     }
 
-    if (lastFailedUploadName_ == name) {
+    lockState();
+    const bool wasLastFailed = lastFailedUploadName_ == name;
+    if (wasLastFailed) {
         lastFailedUploadName_ = "";
     }
+    unlockState();
     if (!startBackgroundUpload(path, name, size)) {
+        lockState();
         lastFailedUploadName_ = name;
+        unlockState();
         status_ = Status::kError;
         nextActionMs_ = millis() + kErrorRetryMs;
     }
@@ -279,19 +316,25 @@ bool UploadService::startBackgroundUpload(const String& path,
             expected, true, std::memory_order_acq_rel)) {
         return false;
     }
+    lockState();
     backgroundUploadPath_ = path;
     backgroundUploadName_ = name;
+    unlockState();
     backgroundUploadSize_ = size;
     backgroundUploadBytesSent_.store(0, std::memory_order_relaxed);
     backgroundUploadBytesTotal_.store(size, std::memory_order_relaxed);
+    lockState();
     activeUploadName_ = name;
+    unlockState();
     status_ = Status::kUploading;
     TaskHandle_t task = nullptr;
     if (xTaskCreatePinnedToCore(uploadTaskEntry, "voice_upload", 8192,
                                 this, 1, &task, 0) != pdPASS) {
+        lockState();
         activeUploadName_ = "";
+        unlockState();
         backgroundUploadActive_.store(false, std::memory_order_release);
-        lastGatewayDiagnostic_ = "UPLOAD TASK FAILED";
+        setGatewayDiagnostic("UPLOAD TASK FAILED");
         return false;
     }
     return true;
@@ -304,35 +347,48 @@ void UploadService::uploadTaskEntry(void* context)
 
 void UploadService::backgroundUpload()
 {
+    lockState();
     const String path = backgroundUploadPath_;
     const String name = backgroundUploadName_;
-    const std::uint32_t size = backgroundUploadSize_;
+    unlockState();
+    const std::uint32_t size =
+        backgroundUploadSize_.load(std::memory_order_acquire);
     const bool delivered = upload(path, name, size);
     RecordingMetadata submitted;
     const bool completed = delivered && recordingMetadata(name, submitted) &&
                            submitted.status == "completed";
     const bool recorded = completed && markSent(name, size);
+    lockState();
     activeUploadName_ = "";
+    unlockState();
     if (completed && !recorded) {
-        lastGatewayDiagnostic_ = "UPLOAD OK; SD LEDGER ERROR";
+        setGatewayDiagnostic("UPLOAD OK; SD LEDGER ERROR");
     }
     if (recorded) {
         recordingChanged_ = true;
+        lockState();
         lastFailedUploadName_ = "";
+        unlockState();
         status_ = Status::kReady;
         nextActionMs_ = millis() + 1000;
     } else if (delivered) {
         recordingChanged_ = true;
+        lockState();
         lastFailedUploadName_ = "";
+        unlockState();
         status_ = Status::kReady;
         nextActionMs_ = millis() + kJobPollMs;
     } else {
+        lockState();
         lastFailedUploadName_ = name;
+        unlockState();
         status_ = Status::kError;
         nextActionMs_ = millis() + kErrorRetryMs;
     }
+    lockState();
     backgroundUploadPath_ = "";
     backgroundUploadName_ = "";
+    unlockState();
     backgroundUploadSize_ = 0;
     backgroundUploadActive_.store(false, std::memory_order_release);
     backgroundUploadBytesSent_.store(0, std::memory_order_relaxed);
@@ -355,7 +411,7 @@ String UploadService::shortStatus() const
     if (transferActive()) {
         return "UPLOADING";
     }
-    switch (status_) {
+    switch (status_.load(std::memory_order_acquire)) {
         case Status::kOffline:
             return "NET OFF";
         case Status::kConnecting:
@@ -365,8 +421,10 @@ String UploadService::shortStatus() const
         case Status::kUploading:
             return "UPLOADING";
         case Status::kError:
-            return lastHttpStatus_ > 0
-                       ? "NET E" + String(lastHttpStatus_)
+            return lastHttpStatus_.load(std::memory_order_acquire) > 0
+                       ? "NET E" +
+                             String(lastHttpStatus_.load(
+                                 std::memory_order_acquire))
                        : "NET ERR";
         default:
             return "UPLOAD OFF";
@@ -668,7 +726,10 @@ String UploadService::gatewayBaseUrl() const
 
 String UploadService::gatewayDiagnostic() const
 {
-    return lastGatewayDiagnostic_;
+    lockState();
+    const String diagnostic = lastGatewayDiagnostic_;
+    unlockState();
+    return diagnostic;
 }
 
 String UploadService::currentVoiceProfile() const
@@ -734,7 +795,7 @@ String UploadService::localIp() const
 
 std::uint16_t UploadService::lastHttpStatus() const
 {
-    return lastHttpStatus_;
+    return lastHttpStatus_.load(std::memory_order_acquire);
 }
 
 String UploadService::recordingMetadataPath(const String& filename) const
@@ -807,10 +868,14 @@ String UploadService::recordingStatus(const String& filename,
             return String(metadata.progress) + "%";
         }
     }
-    if (activeUploadName_ == filename) {
+    lockState();
+    const bool active = activeUploadName_ == filename;
+    const bool failed = lastFailedUploadName_ == filename;
+    unlockState();
+    if (active) {
         return "WORK";
     }
-    if (lastFailedUploadName_ == filename) {
+    if (failed) {
         return "ERROR";
     }
     return wasSent(filename, size) ? "SENT" : "QUEUE";
@@ -845,19 +910,23 @@ String UploadService::recordingDeliveryDetail(const String& filename,
         return "Submission: accepted by gateway"
                "\nTranscription: result not cached by old firmware";
     }
-    if (activeUploadName_ == filename) {
+    lockState();
+    const bool active = activeUploadName_ == filename;
+    const bool failed = lastFailedUploadName_ == filename;
+    unlockState();
+    if (active) {
         return "Submission: in progress"
                "\nTranscription: gateway is processing audio";
     }
     String detail = "Submission: not sent (queued on SD)";
     if (!wifiConnected()) {
         detail += "\nNetwork: offline";
-    } else if (lastFailedUploadName_ == filename) {
+    } else if (failed) {
         detail += "\nLast attempt: failed";
-        detail += "\nGateway: " + lastGatewayDiagnostic_;
+        detail += "\nGateway: " + gatewayDiagnostic();
     } else {
         detail += "\nNetwork: connected to " + wifiSsid();
-        detail += "\nGateway: " + lastGatewayDiagnostic_;
+        detail += "\nGateway: " + gatewayDiagnostic();
     }
     return detail;
 }
@@ -869,15 +938,19 @@ bool UploadService::takeRecordingChanged()
 
 String UploadService::takeLastJobId()
 {
+    lockState();
     const String result = lastSubmittedJobId_;
     lastSubmittedJobId_ = "";
+    unlockState();
     return result;
 }
 
 String UploadService::takeLastJobThreadId()
 {
+    lockState();
     const String result = lastSubmittedThreadId_;
     lastSubmittedThreadId_ = "";
+    unlockState();
     return result;
 }
 
@@ -1150,7 +1223,7 @@ bool UploadService::discoverGateway()
 
     WiFiUDP udp;
     if (!udp.begin(0)) {
-        lastGatewayDiagnostic_ = "DISCOVERY UDP FAILED";
+        setGatewayDiagnostic("DISCOVERY UDP FAILED");
         return false;
     }
     const IPAddress multicast(224, 0, 0, 251);
@@ -1227,16 +1300,17 @@ bool UploadService::discoverGateway()
             scheme = "https";
         }
         config_.gatewayBaseUrl = scheme + "://" + host + ":" + String(port);
-        lastGatewayDiagnostic_ = "DISCOVERED " + config_.gatewayBaseUrl;
-        Serial.println("[AGENT] " + lastGatewayDiagnostic_);
+        const String diagnostic = "DISCOVERED " + config_.gatewayBaseUrl;
+        setGatewayDiagnostic(diagnostic);
+        Serial.println("[AGENT] " + diagnostic);
         return true;
     }
     if (config_.gatewayFallbackUrl.length() > 0) {
         config_.gatewayBaseUrl = config_.gatewayFallbackUrl;
-        lastGatewayDiagnostic_ = "DISCOVERY FALLBACK " + config_.gatewayBaseUrl;
+        setGatewayDiagnostic("DISCOVERY FALLBACK " + config_.gatewayBaseUrl);
         return true;
     }
-    lastGatewayDiagnostic_ = "GATEWAY DISCOVERY FAILED";
+    setGatewayDiagnostic("GATEWAY DISCOVERY FAILED");
     return false;
 }
 
@@ -1342,10 +1416,14 @@ bool UploadService::markSent(const String& name, std::uint32_t size)
     if (!ledger) {
         return false;
     }
-    ledger.println(name + "|" + String(size));
+    const String line = name + "|" + String(size) + "\n";
+    const std::size_t written = ledger.print(line);
     ledger.flush();
     ledger.close();
-    return true;
+    // A successful HTTP response must not be reported as durably delivered
+    // unless the SD ledger really contains the acknowledgement.  This also
+    // makes a transient card/write failure retryable on the next update.
+    return written == line.length() && wasSent(name, size);
 }
 
 bool UploadService::renameCompletedRecording(
@@ -1482,7 +1560,7 @@ bool UploadService::ensureTlsClock()
             return true;
         }
     }
-    lastGatewayDiagnostic_ = "TLS CLOCK NOT SET";
+    setGatewayDiagnostic("TLS CLOCK NOT SET");
     Serial.println("[AGENT] TLS clock synchronization failed.");
     return false;
 }
@@ -1492,6 +1570,12 @@ bool UploadService::upload(const String& path, const String& name,
 {
     File wav = storage_->open(path.c_str(), FILE_READ);
     if (!wav) {
+        return false;
+    }
+    const std::uint32_t actualSize = static_cast<std::uint32_t>(wav.size());
+    if (actualSize <= 44 || actualSize != size) {
+        wav.close();
+        setGatewayDiagnostic("AUDIO FILE CHANGED");
         return false;
     }
 
@@ -1532,10 +1616,14 @@ bool UploadService::upload(const String& path, const String& name,
         JsonDocument response;
         if (!deserializeJson(response, responseBody)) {
             metadataSaved = writeRecordingMetadata(name, response);
-            lastSubmittedJobId_ = response["codex_job_id"] | "";
-            if (lastSubmittedJobId_.length() > 0) {
+            const String submittedJobId = response["codex_job_id"] | "";
+            lockState();
+            lastSubmittedJobId_ = submittedJobId;
+            lastSubmittedThreadId_ = "";
+            if (submittedJobId.length() > 0) {
                 lastSubmittedThreadId_ = threadId;
             }
+            unlockState();
         }
     }
     Serial.printf("[UPLOAD] %s -> HTTP %d\n", name.c_str(), status);
@@ -1567,26 +1655,39 @@ bool UploadService::pollVoiceJob(const String& filename,
     JsonDocument response;
     if (deserializeJson(response, body) ||
         !writeRecordingMetadata(filename, response)) {
-        lastGatewayDiagnostic_ = "VOICE JOB INVALID RESPONSE";
+        setGatewayDiagnostic("VOICE JOB INVALID RESPONSE");
         return false;
     }
     const String state = response["status"] | "";
     if (state == "completed") {
+        Destination completionDestination = Destination::kNote;
+        String completionThreadId;
+        String completionProfile;
+        readRoute(filename, completionDestination, completionThreadId,
+                  completionProfile);
         String finalFilename;
         const String suggestedFilename = response["suggested_filename"] | "";
         if (!renameCompletedRecording(filename, suggestedFilename,
                                       finalFilename)) {
-            lastGatewayDiagnostic_ = "JOB OK; SD RENAME ERROR";
+            setGatewayDiagnostic("JOB OK; SD RENAME ERROR");
             return false;
         }
         if (!wasSent(finalFilename, size) && !markSent(finalFilename, size)) {
-            lastGatewayDiagnostic_ = "JOB OK; SD LEDGER ERROR";
+            setGatewayDiagnostic("JOB OK; SD LEDGER ERROR");
             return false;
         }
+        lockState();
         lastSubmittedJobId_ = response["codex_job_id"] | "";
+        lastSubmittedThreadId_ = "";
+        if (lastSubmittedJobId_.length() > 0) {
+            lastSubmittedThreadId_ = completionThreadId;
+        }
+        unlockState();
         recordingChanged_ = true;
     } else if (state == "failed" || state == "canceled") {
+        lockState();
         lastFailedUploadName_ = filename;
+        unlockState();
         recordingChanged_ = true;
     }
     return true;
@@ -1631,7 +1732,9 @@ bool UploadService::controlVoiceJob(const String& filename,
 
 bool UploadService::retryVoiceJob(const String& filename)
 {
+    lockState();
     lastFailedUploadName_ = "";
+    unlockState();
     return controlVoiceJob(filename, "retry");
 }
 
@@ -1664,7 +1767,9 @@ bool UploadService::retryFailedVoiceJobs(std::size_t& retriedCount)
         return false;
     }
     retriedCount = response["count"] | 0;
+    lockState();
     lastFailedUploadName_ = "";
+    unlockState();
     recordingChanged_ = true;
     nextFailedPollMs_ = millis() + 250;
     nextActionMs_ = millis() + 250;
@@ -1720,7 +1825,7 @@ bool UploadService::reprocessVoiceJob(const String& filename,
 bool UploadService::ensureOnline(unsigned long timeoutMs)
 {
     if (transferActive()) {
-        lastGatewayDiagnostic_ = "AUDIO UPLOAD IN PROGRESS";
+        setGatewayDiagnostic("AUDIO UPLOAD IN PROGRESS");
         return false;
     }
     if (!config_.valid()) {
@@ -1850,20 +1955,20 @@ bool UploadService::beginHttp(HTTPClient& http, WiFiClient& plain,
         Serial.printf("[AGENT] HTTPS %s (epoch %lld)\n", url.c_str(),
                       static_cast<long long>(now));
         if (!loadCaCertificate(caPem)) {
-            lastGatewayDiagnostic_ = "GATEWAY CA MISSING";
+            setGatewayDiagnostic("GATEWAY CA MISSING");
             Serial.println("[AGENT] Gateway CA is unavailable.");
             return false;
         }
         secure.setCACert(caPem.c_str());
         const bool began = http.begin(secure, url);
         if (!began) {
-            lastGatewayDiagnostic_ = "HTTPS CLIENT INIT FAILED";
+            setGatewayDiagnostic("HTTPS CLIENT INIT FAILED");
         }
         return began;
     }
     const bool began = url.startsWith("http://") && http.begin(plain, url);
     if (!began) {
-        lastGatewayDiagnostic_ = "INVALID GATEWAY URL";
+        setGatewayDiagnostic("INVALID GATEWAY URL");
     }
     return began;
 }
@@ -1873,12 +1978,13 @@ void UploadService::rememberHttpResult(const char* operation, int code,
 {
     lastHttpCode_ = code;
     lastHttpStatus_ = code > 0 ? static_cast<std::uint16_t>(code) : 0;
+    String diagnostic;
     if (isSuccessStatus(code)) {
-        lastGatewayDiagnostic_ = String(operation) + " OK HTTP " + String(code);
+        diagnostic = String(operation) + " OK HTTP " + String(code);
     } else if (code < 0) {
-        lastGatewayDiagnostic_ = String(operation) + " " +
-                                 HTTPClient::errorToString(code) + " (" +
-                                 String(code) + ")";
+        diagnostic = String(operation) + " " +
+                     HTTPClient::errorToString(code) + " (" +
+                     String(code) + ")";
     } else {
         String detail;
         if (responseBody.length() > 0) {
@@ -1890,12 +1996,13 @@ void UploadService::rememberHttpResult(const char* operation, int code,
         if (detail.length() > 70) {
             detail = detail.substring(0, 70);
         }
-        lastGatewayDiagnostic_ = String(operation) + " HTTP " + String(code);
+        diagnostic = String(operation) + " HTTP " + String(code);
         if (detail.length() > 0) {
-            lastGatewayDiagnostic_ += ": " + detail;
+            diagnostic += ": " + detail;
         }
     }
-    Serial.println("[AGENT] " + lastGatewayDiagnostic_);
+    setGatewayDiagnostic(diagnostic);
+    Serial.println("[AGENT] " + diagnostic);
 }
 
 void UploadService::addAuthHeaders(HTTPClient& http)
@@ -1910,7 +2017,7 @@ bool UploadService::refreshGatewayStatus()
     if (!ensureOnline()) {
         gatewayServices_.overall = "OFFLINE";
         gatewayServices_.gateway = "NO WI-FI";
-        lastGatewayDiagnostic_ = "STATUS NO WI-FI";
+        setGatewayDiagnostic("STATUS NO WI-FI");
         return false;
     }
     HTTPClient http;
@@ -1919,7 +2026,7 @@ bool UploadService::refreshGatewayStatus()
     String caPem;
     if (!beginHttp(http, plain, secure, apiUrl("/v1/status"), caPem)) {
         gatewayServices_.overall = "UNREACHABLE";
-        gatewayServices_.gateway = lastGatewayDiagnostic_;
+        gatewayServices_.gateway = gatewayDiagnostic();
         return false;
     }
     http.setConnectTimeout(10000);
@@ -1931,14 +2038,14 @@ bool UploadService::refreshGatewayStatus()
     http.end();
     if (!isSuccessStatus(code)) {
         gatewayServices_.overall = "UNREACHABLE";
-        gatewayServices_.gateway = lastGatewayDiagnostic_;
+        gatewayServices_.gateway = gatewayDiagnostic();
         return false;
     }
     JsonDocument document;
     if (deserializeJson(document, body)) {
         gatewayServices_.overall = "INVALID RESPONSE";
         gatewayServices_.gateway = "INVALID JSON";
-        lastGatewayDiagnostic_ = "STATUS INVALID JSON";
+        setGatewayDiagnostic("STATUS INVALID JSON");
         return false;
     }
     auto component = [&document](const char* name) {
@@ -1985,8 +2092,9 @@ bool UploadService::refreshChats(std::vector<CodexChat>& chats)
     }
     JsonDocument document;
     if (deserializeJson(document, body)) {
-        lastGatewayDiagnostic_ = "CHATS INVALID JSON";
-        Serial.println("[AGENT] " + lastGatewayDiagnostic_);
+        const String diagnostic = "CHATS INVALID JSON";
+        setGatewayDiagnostic(diagnostic);
+        Serial.println("[AGENT] " + diagnostic);
         return false;
     }
     for (JsonObject item : document["data"].as<JsonArray>()) {
@@ -2061,7 +2169,7 @@ bool UploadService::fetchConversation(const String& threadId, String& text)
     }
     JsonDocument document;
     if (deserializeJson(document, body)) {
-        lastGatewayDiagnostic_ = "CHAT INVALID JSON";
+        setGatewayDiagnostic("CHAT INVALID JSON");
         return false;
     }
     for (JsonObject item : document["messages"].as<JsonArray>()) {
@@ -2109,7 +2217,7 @@ bool UploadService::sendCodexMessage(const String& threadId,
     }
     JsonDocument response;
     if (deserializeJson(response, body)) {
-        lastGatewayDiagnostic_ = "MESSAGE INVALID JSON";
+        setGatewayDiagnostic("MESSAGE INVALID JSON");
         return false;
     }
     jobId = response["id"] | "";
@@ -2141,7 +2249,7 @@ bool UploadService::pollCodexJob(const String& jobId,
     }
     JsonDocument response;
     if (deserializeJson(response, body)) {
-        lastGatewayDiagnostic_ = "JOB INVALID JSON";
+        setGatewayDiagnostic("JOB INVALID JSON");
         return false;
     }
     job.status = response["status"] | "";
@@ -2218,7 +2326,8 @@ bool UploadService::downloadCodexSpeech(const String& threadId,
                                         bool conversation,
                                         const String& targetPath)
 {
-    if (threadId.length() == 0 || !ensureOnline()) {
+    if (threadId.length() == 0 || storage_ == nullptr ||
+        !storage_->isMounted() || !ensureOnline()) {
         return false;
     }
     HTTPClient http;
@@ -2241,10 +2350,15 @@ bool UploadService::downloadCodexSpeech(const String& threadId,
         http.end();
         return false;
     }
-    if (storage_->exists(targetPath.c_str())) {
-        storage_->remove(targetPath.c_str());
+    const int expectedBytes = http.getSize();
+    // Never stream directly into the file used by playback.  A timeout or a
+    // removed SD card must not leave a truncated WAV that looks playable on
+    // the next Read attempt.
+    const String temporaryPath = targetPath + ".TMP";
+    if (storage_->exists(temporaryPath.c_str())) {
+        storage_->remove(temporaryPath.c_str());
     }
-    File target = storage_->open(targetPath.c_str(), FILE_WRITE);
+    File target = storage_->open(temporaryPath.c_str(), FILE_WRITE);
     const int written = target ? http.writeToStream(&target) : -1;
     if (target) {
         target.flush();
@@ -2252,8 +2366,40 @@ bool UploadService::downloadCodexSpeech(const String& threadId,
     }
     rememberHttpResult("SPEECH", code);
     http.end();
-    if (written <= 44) {
-        storage_->remove(targetPath.c_str());
+    const std::uint32_t actualBytes =
+        storage_->fileSize(temporaryPath.c_str());
+    if (written <= 44 || actualBytes <= 44 ||
+        actualBytes != static_cast<std::uint32_t>(written) ||
+        (expectedBytes > 0 && written != expectedBytes)) {
+        if (storage_->exists(temporaryPath.c_str())) {
+            storage_->remove(temporaryPath.c_str());
+        }
+        setGatewayDiagnostic("SPEECH AUDIO INCOMPLETE");
+        return false;
+    }
+
+    File validationFile = storage_->open(temporaryPath.c_str(), FILE_READ);
+    WavReader validationReader;
+    const bool validWav = validationFile && validationReader.begin(validationFile) &&
+                          validationReader.info().dataSize > 0;
+    validationReader.end();
+    if (!validWav) {
+        if (storage_->exists(temporaryPath.c_str())) {
+            storage_->remove(temporaryPath.c_str());
+        }
+        setGatewayDiagnostic("SPEECH INVALID WAV");
+        return false;
+    }
+
+    if (storage_->exists(targetPath.c_str()) &&
+        !storage_->remove(targetPath.c_str())) {
+        storage_->remove(temporaryPath.c_str());
+        setGatewayDiagnostic("SPEECH TARGET BUSY");
+        return false;
+    }
+    if (!storage_->rename(temporaryPath.c_str(), targetPath.c_str())) {
+        storage_->remove(temporaryPath.c_str());
+        setGatewayDiagnostic("SPEECH SAVE FAILED");
         return false;
     }
     return true;
