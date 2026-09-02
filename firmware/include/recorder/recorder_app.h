@@ -23,6 +23,11 @@ public:
     void begin();
     void update();
 
+#if defined(CARDPUTER_SIM)
+    // The desktop preview harness scripts internal state to render screens.
+    friend struct SimAccess;
+#endif
+
 private:
     enum class LibrarySortMode : std::uint8_t {
         kNewest,
@@ -289,6 +294,9 @@ private:
     bool saveAwaitingSettle_ = false;
     String currentPath_;
     String message_;
+    // Library-screen toast: the last message_ value shown and when it appeared.
+    String toastMessage_;
+    unsigned long toastShownMs_ = 0;
     unsigned long operationStartedMs_ = 0;
     unsigned long lastBatteryReadMs_ = 0;
     unsigned long lastDrawMs_ = 0;

@@ -40,30 +40,70 @@ String utf8Prefix(const String& value, std::size_t maximumCharacters)
     return result;
 }
 
-void drawTextViewport(M5Canvas& display, const String& value, int scroll,
-                      std::uint16_t foreground,
-                      std::uint16_t background, std::uint8_t scale = 1)
+// Thin position indicator in the 5 px right margin shared by every list.
+void drawScrollbar(M5Canvas& display, int top, int height, int total,
+                   int first, int visible, std::uint16_t color)
 {
-    scale = constrain(scale, 1, 2);
-    const int columnsPerLine = 37 / scale;
-    const int visibleRows = 8 / scale;
+    if (total <= visible || height <= 0) {
+        return;
+    }
+    const int x = display.width() - 3;
+    display.drawFastVLine(x, top, height, 0x2124);
+    const int thumb = max(6, height * visible / total);
+    const int travel = height - thumb;
+    const int maxFirst = max(1, total - visible);
+    const int y = top + travel * min(first, maxFirst) / maxFirst;
+    display.fillRect(x - 1, y, 3, thumb, color);
+}
+
+// Wrap UTF-8 text into lines of at most columnsPerLine characters, breaking
+// at spaces where possible.
+std::vector<String> wrapLines(const String& value, int columnsPerLine)
+{
     std::vector<String> lines;
     String line;
     int columns = 0;
+    int lastSpaceByte = -1;   // byte offset of the last space in `line`
+    int lastSpaceColumn = 0;  // column count up to (excluding) that space
     for (std::size_t index = 0; index < value.length();) {
         const char character = value[index];
         if (character == '\r') {
             ++index;
             continue;
         }
-        if (character == '\n' || columns >= columnsPerLine) {
+        if (character == '\n') {
             lines.push_back(line);
             line = "";
             columns = 0;
-            if (character == '\n') {
+            lastSpaceByte = -1;
+            ++index;
+            continue;
+        }
+        if (columns >= columnsPerLine) {
+            // Break at the last space when the line holds more than one
+            // word, so words are not split mid-way at either text scale.
+            if (character != ' ' && lastSpaceByte > 0) {
+                lines.push_back(line.substring(0, lastSpaceByte));
+                line = line.substring(lastSpaceByte + 1);
+                columns -= lastSpaceColumn + 1;
+            } else {
+                lines.push_back(line);
+                line = "";
+                columns = 0;
+            }
+            lastSpaceByte = -1;
+            if (character == ' ') {
                 ++index;
                 continue;
             }
+        }
+        if (character == ' ') {
+            if (columns == 0) {
+                ++index;
+                continue;
+            }
+            lastSpaceByte = static_cast<int>(line.length());
+            lastSpaceColumn = columns;
         }
         const std::size_t length = utf8LengthAt(value, index);
         line += value.substring(index, index + length);
@@ -73,6 +113,17 @@ void drawTextViewport(M5Canvas& display, const String& value, int scroll,
     if (line.length() > 0 || lines.empty()) {
         lines.push_back(line);
     }
+    return lines;
+}
+
+void drawTextViewport(M5Canvas& display, const String& value, int scroll,
+                      std::uint16_t foreground,
+                      std::uint16_t background, std::uint8_t scale = 1)
+{
+    scale = constrain(scale, 1, 2);
+    const int columnsPerLine = 37 / scale;
+    const int visibleRows = 8 / scale;
+    const std::vector<String> lines = wrapLines(value, columnsPerLine);
     const int maximum = max(0, static_cast<int>(lines.size()) - visibleRows);
     const int first = min(max(0, scroll), maximum);
     display.setFont(&fonts::efontCN_10);
@@ -84,6 +135,8 @@ void drawTextViewport(M5Canvas& display, const String& value, int scroll,
         display.print(lines[first + row]);
     }
     display.setTextSize(1);
+    drawScrollbar(display, 27, 82, static_cast<int>(lines.size()), first,
+                  visibleRows, 0x05FF);
 }
 
 // Clip text to a pixel budget using the current font, appending ".." so a
@@ -113,6 +166,16 @@ String fitText(M5Canvas& display, const String& value, int maxWidth)
 void RecorderApp::draw()
 {
     const unsigned long now = millis();
+    // Library toast: surface message_ changes that other screens would
+    // otherwise swallow, and redraw once more when the toast expires.
+    if (message_ != toastMessage_) {
+        toastMessage_ = message_;
+        toastShownMs_ = message_.length() > 0 ? max(1UL, now) : 0;
+        forceRedraw_ = true;
+    } else if (toastShownMs_ != 0 && now - toastShownMs_ >= kToastMs) {
+        toastShownMs_ = 0;
+        forceRedraw_ = true;
+    }
     const bool active =
         state_ == State::kRecording || state_ == State::kSaving ||
         state_ == State::kPlaying ||
@@ -460,6 +523,9 @@ void RecorderApp::draw()
                         display.width() - 7, y + 7);
                     display.setTextDatum(top_left);
                 }
+                drawScrollbar(display, 27, 80,
+                              static_cast<int>(wifiScanResults_.size()),
+                              first, 4, accent);
             }
         } else if (wifiPasswordPage) {
             display.setTextFont(1);
@@ -527,6 +593,7 @@ void RecorderApp::draw()
                                    display.width() - 10, y + 8);
                 display.setTextDatum(top_left);
             }
+            drawScrollbar(display, 29, 76, settingCount, first, 4, accent);
         }
         display.fillRect(0, 111, display.width(), 24, panel);
         display.setTextFont(1);
@@ -685,6 +752,9 @@ void RecorderApp::draw()
                 display.print(fitText(display, filename,
                                       display.width() - 52 - 7));
             }
+            drawScrollbar(display, 27, 80,
+                          static_cast<int>(outboxFiles_.size()), first, 4,
+                          accent);
         }
         display.fillRect(0, 111, display.width(), 24, panel);
         display.setTextFont(1);
@@ -710,10 +780,12 @@ void RecorderApp::draw()
                                   selectedPanel);
             display.setFont(&fonts::efontCN_10);
             display.setTextColor(TFT_WHITE, selectedPanel);
-            display.setCursor(10, 31);
-            display.setTextWrap(true);
-            display.print(codexChats_[selectedCodexChat_].name);
-            display.setTextWrap(false);
+            const std::vector<String> lines =
+                wrapLines(codexChats_[selectedCodexChat_].name, 36);
+            for (std::size_t row = 0; row < lines.size() && row < 6; ++row) {
+                display.setCursor(10, 31 + static_cast<int>(row) * 11);
+                display.print(lines[row]);
+            }
             display.setTextFont(1);
             display.setTextDatum(bottom_right);
             display.drawString(String(selectedCodexChat_ + 1) + "/" +
@@ -735,18 +807,25 @@ void RecorderApp::draw()
                     display.fillRoundRect(5, y - 2, display.width() - 10,
                                           19, 4, selectedPanel);
                 }
-                String name = utf8Prefix(codexChats_[index].name, 25);
+                const String counter =
+                    String(index + 1) + "/" + String(codexChats_.size());
+                display.setTextFont(1);
+                const int counterWidth = display.textWidth(counter);
                 display.setFont(&fonts::efontCN_10);
                 display.setTextColor(selected ? TFT_WHITE : muted,
                                      selected ? selectedPanel : background);
                 display.setCursor(10, y + 3);
-                display.print(name);
+                display.print(fitText(display, codexChats_[index].name,
+                                      display.width() - 9 - counterWidth -
+                                          6 - 10));
                 display.setTextDatum(middle_right);
-                display.drawString(String(index + 1) + "/" +
-                                       String(codexChats_.size()),
-                                   display.width() - 9, y + 7);
+                display.setTextFont(1);
+                display.drawString(counter, display.width() - 9, y + 7);
                 display.setTextDatum(top_left);
             }
+            drawScrollbar(display, 26, 80,
+                          static_cast<int>(codexChats_.size()), first, 4,
+                          accent);
         }
         display.fillRect(0, 111, display.width(), 24, panel);
         display.setTextFont(1);
@@ -774,9 +853,11 @@ void RecorderApp::draw()
             display.setTextFont(1);
             display.setTextColor(TFT_WHITE, panel);
             display.setCursor(12, 55);
+            display.setClipRect(12, 55, display.width() - 24, 36);
             display.setTextWrap(true);
             display.print(approval);
             display.setTextWrap(false);
+            display.clearClipRect();
             display.setCursor(12, 94);
             display.setTextColor(accent, panel);
             display.print("ENTER once  S session  D deny");
@@ -839,9 +920,11 @@ void RecorderApp::draw()
         display.setTextFont(1);
         display.setTextColor(TFT_WHITE, panel);
         display.setCursor(18, 66);
+        display.setClipRect(18, 66, display.width() - 36, 34);
         display.setTextWrap(true);
         display.print(message_);
         display.setTextWrap(false);
+        display.clearClipRect();
         display.setTextColor(accent, background);
         display.setCursor(8, 116);
         display.print("ENTER retry storage");
@@ -921,10 +1004,17 @@ void RecorderApp::draw()
                     display.width() - 10 - counterWidth - 6 - nameX));
             }
         }
+        drawScrollbar(display, 27, 60, static_cast<int>(files_.size()),
+                      max(0, selected_ - 1), 3, accent);
         display.setTextFont(1);
-        display.setTextColor(muted, background);
         display.setCursor(8, 94);
-        display.print(fitText(display, detail, display.width() - 16));
+        if (toastShownMs_ != 0 && state_ == State::kBrowsing) {
+            display.setTextColor(accent, background);
+            display.print(fitText(display, message_, display.width() - 16));
+        } else {
+            display.setTextColor(muted, background);
+            display.print(fitText(display, detail, display.width() - 16));
+        }
         display.fillRect(0, 111, display.width(), 24, panel);
         display.setTextFont(1);
         display.setTextColor(TFT_RED, panel);

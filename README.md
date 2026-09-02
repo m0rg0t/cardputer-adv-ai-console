@@ -29,17 +29,30 @@ repository. See [SECURITY.md](SECURITY.md) before publishing or deploying it.
 
 ## Screenshots
 
+Rendered by the desktop preview in [`firmware/sim/`](firmware/sim/), which
+runs the firmware's real drawing code through the M5GFX SDL backend. Every
+screen below is the exact 240 × 135 frame the Cardputer shows, scaled 3×.
+
 <p align="center">
-  <img src="docs/images/record.jpg" alt="Record screen" width="32%">
-  <img src="docs/images/play.jpg" alt="Play screen" width="32%">
-  <img src="docs/images/library.jpg" alt="Library screen" width="32%">
+  <img src="docs/images/screens/recording.png" alt="Recording screen" width="32%">
+  <img src="docs/images/screens/playing.png" alt="Playback screen" width="32%">
+  <img src="docs/images/screens/library.png" alt="Library screen" width="32%">
 </p>
 
 <p align="center">
-  <img src="docs/images/setting.jpg" alt="Settings screen" width="32%">
-  <img src="docs/images/help.jpg" alt="Help screen" width="32%">
-  <img src="docs/images/standby.jpg" alt="Standby screen" width="32%">
+  <img src="docs/images/screens/codex.png" alt="Codex conversation screen" width="32%">
+  <img src="docs/images/screens/outbox.png" alt="Outbox screen" width="32%">
+  <img src="docs/images/screens/settings.png" alt="Settings screen" width="32%">
 </p>
+
+<p align="center">
+  <img src="docs/images/screens/help.png" alt="Help screen" width="32%">
+  <img src="docs/images/screens/services.png" alt="Gateway services screen" width="32%">
+  <img src="docs/images/screens/saver-grid.png" alt="Standby screen" width="32%">
+</p>
+
+All 33 scripted screens are in [`docs/images/screens/`](docs/images/screens/).
+Regenerate them with `python3 firmware/sim/render_docs.py`.
 
 ## Features
 

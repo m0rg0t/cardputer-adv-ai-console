@@ -108,7 +108,7 @@ h1 em, h2 em { color: var(--cyan); font-style: normal; }
 .screens { background: #0a1012; border-block: 1px solid var(--line); }
 .screen-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .screen-grid figure { margin: 0; background: var(--panel); border: 1px solid var(--line); padding: 9px; }
-.screen-grid img { aspect-ratio: 4/3; object-fit: contain; object-position: center; background: #050809; filter: saturate(.82) contrast(1.08); }
+.screen-grid img { aspect-ratio: 16/9; object-fit: contain; object-position: center; background: #050809; image-rendering: pixelated; }
 .screen-grid figcaption { padding: 13px 5px 5px; color: var(--muted); font: 10px var(--font-mono); text-transform: uppercase; letter-spacing: .1em; }
 .screen-grid figcaption span { color: var(--cyan); margin-right: 12px; }
 

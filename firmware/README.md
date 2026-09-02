@@ -21,3 +21,10 @@ After Wi-Fi connects, the local administration panel is available at
 allows WAV playback or download, and edits common recorder settings. Set
 `web_hostname` in `/RECORDER.CFG` to change the `.local` name; use the IP shown
 under **Settings → Network** when the LAN does not support mDNS.
+
+## Desktop preview
+
+`pio run -e native-sim` builds a desktop window that renders the device
+screens through the M5GFX SDL backend using the firmware's own drawing code.
+See [`sim/README.md`](sim/README.md) for the scenario list and the
+documentation export script.

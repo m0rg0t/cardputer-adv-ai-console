@@ -14,6 +14,7 @@ constexpr WavSpec kCompactRecordingSpec{8000, 1, 16};
 constexpr AudioFormat kCompactAudioFormat{8000, 1, 16};
 constexpr std::uint64_t kMinimumFreeBytes = 64 * 1024;
 constexpr unsigned long kActiveDrawIntervalMs = 200;
+constexpr unsigned long kToastMs = 4000;
 constexpr std::uint8_t kPlaybackQueueCapacity = 2;
 constexpr unsigned long kCaptureStartTimeoutMs = 1000;
 constexpr unsigned long kCaptureDrainTimeoutMs = 1000;

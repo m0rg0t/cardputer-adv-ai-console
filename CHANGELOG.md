@@ -13,6 +13,15 @@
 - Bound voice-job polling on the device main loop to a 10 s read timeout so a
   slow gateway cannot freeze the UI for 30 s per poll.
 - Use 64-bit arithmetic in WAV chunk bounds checks.
+- Add a desktop preview (`pio run -e native-sim`) that renders the device
+  screens through the M5GFX SDL backend with scripted state, plus
+  `firmware/sim/render_docs.py` to export them; README and site screenshots
+  are now generated from it.
+- Device UI: show status messages as a timed toast on the Library screen (they
+  were previously invisible there), add scroll indicators to every list and
+  text viewport, wrap Codex, transcript, compose, and chat-name text on word
+  boundaries, clip wrapped text to its card, and clip compact chat names to the
+  pixel width with an ellipsis.
 - Device UI: clip long human-readable titles in the Library and Outbox lists
   to the available pixel width instead of running into the row counter, hint
   `O OUTBOX` in the Library footer while work is pending, and explain the

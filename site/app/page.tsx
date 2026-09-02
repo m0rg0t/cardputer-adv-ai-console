@@ -144,12 +144,15 @@ export default function Home() {
         <div className="shell">
           <div className="section-heading compact">
             <div><span className="kicker">INTERFACE / 03</span><h2>Designed for the<br />screen in your hand.</h2></div>
-            <p>Contextual help, service diagnostics, readable transcripts, Wi-Fi scanning, and clear delivery states fit a 240 × 135 display.</p>
+            <p>Contextual help, service diagnostics, readable transcripts, Wi-Fi scanning, and clear delivery states fit a 240 × 135 display. Frames are rendered from the firmware's own drawing code by the desktop preview.</p>
           </div>
           <div className="screen-grid">
-            <figure className="screen-large"><img src="images/record.jpg" alt="Active recording screen" /><figcaption><span>01</span> Capture</figcaption></figure>
-            <figure><img src="images/settings.jpg" alt="Cardputer Agent Console settings" /><figcaption><span>02</span> Control</figcaption></figure>
-            <figure><img src="images/standby.jpg" alt="Cyberpunk standby screen" /><figcaption><span>03</span> Standby</figcaption></figure>
+            <figure className="screen-large"><img src="images/screens/recording.png" alt="Active recording screen" /><figcaption><span>01</span> Capture</figcaption></figure>
+            <figure><img src="images/screens/codex.png" alt="Codex conversation on the Cardputer" /><figcaption><span>02</span> Codex</figcaption></figure>
+            <figure><img src="images/screens/library.png" alt="Recording library with delivery states" /><figcaption><span>03</span> Library</figcaption></figure>
+            <figure><img src="images/screens/settings.png" alt="Cardputer Agent Console settings" /><figcaption><span>04</span> Control</figcaption></figure>
+            <figure><img src="images/screens/outbox.png" alt="Outbox with pending deliveries" /><figcaption><span>05</span> Outbox</figcaption></figure>
+            <figure><img src="images/screens/saver-grid.png" alt="Cyberpunk standby screen" /><figcaption><span>06</span> Standby</figcaption></figure>
           </div>
         </div>
       </section>
