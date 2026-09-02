@@ -86,6 +86,28 @@ void drawTextViewport(M5Canvas& display, const String& value, int scroll,
     display.setTextSize(1);
 }
 
+// Clip text to a pixel budget using the current font, appending ".." so a
+// long human-readable title never runs into the counter or off screen.
+String fitText(M5Canvas& display, const String& value, int maxWidth)
+{
+    if (maxWidth <= 0 || display.textWidth(value) <= maxWidth) {
+        return value;
+    }
+    std::size_t characters = 0;
+    for (std::size_t index = 0; index < value.length();
+         index += utf8LengthAt(value, index)) {
+        ++characters;
+    }
+    while (characters > 1) {
+        --characters;
+        const String clipped = utf8Prefix(value, characters) + "..";
+        if (display.textWidth(clipped) <= maxWidth) {
+            return clipped;
+        }
+    }
+    return "..";
+}
+
 }  // namespace
 
 void RecorderApp::draw()
@@ -592,8 +614,8 @@ void RecorderApp::draw()
              "R retry  C Codex"},
             {"ARROWS  select/edit", "S  Wi-Fi scan", "Reading  text size",
              "Screen  visual style"},
-            {"Hold G0  settings", "H  context help", "G0  screen saver",
-             "ESC  back"},
+            {"Hold G0  settings", "H  context help",
+             "W wifi  G gateway  Q queue", "ESC  back"},
         };
 
         display.setTextFont(2);
@@ -660,7 +682,8 @@ void RecorderApp::draw()
                 display.setTextColor(selected ? TFT_WHITE : muted,
                                      selected ? selectedPanel : background);
                 display.setCursor(52, y + 1);
-                display.print(utf8Prefix(filename, 24));
+                display.print(fitText(display, filename,
+                                      display.width() - 52 - 7));
             }
         }
         display.fillRect(0, 111, display.width(), 24, panel);
@@ -883,20 +906,25 @@ void RecorderApp::draw()
                 if (isLocked(files_[index])) {
                     display.print("* ");
                 }
-                display.print(files_[index]);
+                const int nameX = display.getCursorX();
                 display.setTextDatum(middle_right);
                 display.setTextFont(1);
-                display.drawString(
-                    String(index + 1) + "/" +
-                        String(files_.size()),
-                    display.width() - 10, y + 7);
+                const String counter =
+                    String(index + 1) + "/" + String(files_.size());
+                display.drawString(counter, display.width() - 10, y + 7);
+                const int counterWidth = display.textWidth(counter);
                 display.setTextDatum(top_left);
+                display.setTextFont(2);
+                display.setCursor(nameX, y);
+                display.print(fitText(
+                    display, files_[index],
+                    display.width() - 10 - counterWidth - 6 - nameX));
             }
         }
         display.setTextFont(1);
         display.setTextColor(muted, background);
         display.setCursor(8, 94);
-        display.print(detail);
+        display.print(fitText(display, detail, display.width() - 16));
         display.fillRect(0, 111, display.width(), 24, panel);
         display.setTextFont(1);
         display.setTextColor(TFT_RED, panel);
@@ -904,12 +932,13 @@ void RecorderApp::draw()
         display.print(deleteConfirm_ ? "ENTER DELETE" : "R REC");
         display.setTextDatum(top_center);
         display.setTextColor(accent, panel);
-        display.drawString(deleteConfirm_ ? "ESC CANCEL" : "I INFO  S SORT",
+        display.drawString(deleteConfirm_        ? "ESC CANCEL"
+                           : servicePendingCount_ > 0 ? "I INFO  O OUTBOX"
+                                                      : "I INFO  S SORT",
                            display.width() / 2, 120);
         display.setTextDatum(top_right);
         display.setTextColor(muted, panel);
-        display.drawString(files_.empty() ? "C CODEX" : "C CODEX",
-                           display.width() - 8, 120);
+        display.drawString("C CODEX", display.width() - 8, 120);
         display.setTextDatum(top_left);
     }
     recorderCanvas.pushSprite(0, 0);

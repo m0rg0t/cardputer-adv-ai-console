@@ -13,6 +13,10 @@
 - Bound voice-job polling on the device main loop to a 10 s read timeout so a
   slow gateway cannot freeze the UI for 30 s per poll.
 - Use 64-bit arithmetic in WAV chunk bounds checks.
+- Device UI: clip long human-readable titles in the Library and Outbox lists
+  to the available pixel width instead of running into the row counter, hint
+  `O OUTBOX` in the Library footer while work is pending, and explain the
+  W/G/Q header indicators on the Help → System page.
 - Gateway: reject unknown voice profiles with 400 instead of silently using
   `default`, record the Codex turn id before honouring cancellation, split long
   WAVs for whisper-server in a worker thread, and prune finished Codex jobs
