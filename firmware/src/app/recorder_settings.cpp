@@ -39,6 +39,33 @@ bool validWebHostname(const String& hostname)
     return true;
 }
 
+// Browser forms post numbers as strings, and ArduinoJson's operator| only
+// accepts a default when the JSON type matches exactly. Accept both forms and
+// return an out-of-range value for unparsable input so validation rejects it.
+int intSetting(JsonObjectConst object, const char* key, int fallback)
+{
+    const JsonVariantConst value = object[key];
+    if (value.isNull()) {
+        return fallback;
+    }
+    if (value.is<int>()) {
+        return value.as<int>();
+    }
+    if (value.is<const char*>()) {
+        String text = value.as<const char*>();
+        text.trim();
+        if (text.length() == 0) {
+            return fallback;
+        }
+        char* end = nullptr;
+        const long parsed = strtol(text.c_str(), &end, 10);
+        if (end != nullptr && *end == '\0') {
+            return static_cast<int>(parsed);
+        }
+    }
+    return -1;
+}
+
 bool oneOf(int value, std::initializer_list<int> choices)
 {
     for (const int choice : choices) {
@@ -625,13 +652,14 @@ bool RecorderApp::applyWebSettings(JsonObjectConst object, String& error)
     String hostname = object["web_hostname"] | settings_.webHostname;
     hostname.trim();
     hostname.toLowerCase();
-    const int brightness =
-        object["brightness_percent"] | settings_.brightnessPercent;
-    const int lowBattery = object["low_battery_save_percent"] |
-                           settings_.lowBatterySavePercent;
-    const int seek = object["seek_step_seconds"] | settings_.seekStepSeconds;
-    const int sort = object["library_sort"] |
-                     static_cast<int>(settings_.librarySortMode);
+    const int brightness = intSetting(object, "brightness_percent",
+                                      settings_.brightnessPercent);
+    const int lowBattery = intSetting(object, "low_battery_save_percent",
+                                      settings_.lowBatterySavePercent);
+    const int seek =
+        intSetting(object, "seek_step_seconds", settings_.seekStepSeconds);
+    const int sort = intSetting(object, "library_sort",
+                                static_cast<int>(settings_.librarySortMode));
     if (!validWebHostname(hostname)) {
         error = "Имя должно содержать 1–32 символа: a-z, 0-9 и дефис";
         return false;

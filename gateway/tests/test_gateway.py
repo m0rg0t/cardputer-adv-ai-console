@@ -1019,3 +1019,44 @@ async def test_codex_approval_response(settings: Settings) -> None:
         )
     assert response.status_code == 200
     assert response.json()["approvals"] == []
+
+
+@pytest.mark.asyncio
+async def test_rejects_unknown_voice_profile(settings: Settings) -> None:
+    app = create_app(settings)
+    transport = httpx.ASGITransport(app=app)
+    audio = wav_bytes()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/voice/jobs",
+            content=audio,
+            headers={
+                "X-Device-Token": settings.device_token,
+                "X-Voice-Profile": "unknown",
+                "Content-Length": str(len(audio)),
+            },
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid voice profile"
+
+
+def test_codex_prunes_only_finished_jobs() -> None:
+    server = CodexAppServer()
+    for index in range(105):
+        job = CodexJob(
+            id=f"done-{index}",
+            thread_id="thread_12345678",
+            turn_id=f"turn-{index}",
+            status="completed",
+        )
+        server.jobs[job.id] = job
+        server.turn_jobs[job.turn_id] = job.id
+    active = CodexJob(id="active", thread_id="thread_12345678", status="in_progress")
+    server.jobs[active.id] = active
+
+    server._prune_finished_jobs(keep=100)
+
+    assert "active" in server.jobs
+    assert len(server.jobs) == 101
+    assert "done-0" not in server.jobs and "turn-0" not in server.turn_jobs
+    assert "done-104" in server.jobs

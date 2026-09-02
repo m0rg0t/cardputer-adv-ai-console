@@ -9,21 +9,68 @@ namespace {
 constexpr const char kIndexHtml[] PROGMEM = R"HTML(<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Cardputer Recorder</title><style>
-:root{color-scheme:dark;--bg:#0b1020;--card:#151c31;--line:#29334e;--accent:#6be6c1;--muted:#9ba8c7;--danger:#ff7885}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f7ff;font:15px system-ui,sans-serif}main{width:min(920px,calc(100% - 28px));margin:28px auto}h1{font-size:26px;margin:0}h2{font-size:17px;margin:0 0 14px}.lead{color:var(--muted);margin:6px 0 22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:17px;margin-bottom:14px}.metric{font-size:21px;color:var(--accent);margin-top:4px}.muted,small{color:var(--muted)}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-top:1px solid var(--line);padding:11px 7px}th{color:var(--muted);font-weight:500}a{color:var(--accent)}button{border:0;border-radius:9px;background:var(--accent);color:#061711;padding:10px 16px;font-weight:700;cursor:pointer}button:disabled{cursor:wait;opacity:.55}.file-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;white-space:nowrap}.file-action{width:34px;height:34px;padding:0;border:1px solid var(--line);background:#0d1427;color:var(--accent);font-size:17px}.file-action.danger{color:var(--danger)}label{display:grid;gap:6px;color:var(--muted)}input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:#0d1427;color:#fff}.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:13px}.actions{display:flex;align-items:center;gap:12px;margin-top:15px}audio{width:180px;height:34px}@media(max-width:600px){audio{width:125px}.optional{display:none}th,td{padding:10px 4px}.file-actions{flex-wrap:wrap}}
-</style></head><body><main><h1>Cardputer Recorder</h1><p class="lead" id="address">Локальная панель устройства</p>
-<section class="grid"><div class="card"><div class="muted">Состояние</div><div class="metric" id="mode">…</div></div><div class="card"><div class="muted">Wi-Fi</div><div class="metric" id="wifi">…</div><small id="ip"></small></div><div class="card"><div class="muted">microSD</div><div class="metric" id="storage">…</div></div><div class="card"><div class="muted">Батарея</div><div class="metric" id="battery">…</div></div></section>
-<section class="card"><h2>Аудиофайлы</h2><div id="recordings" class="muted">Загрузка…</div></section>
-<section class="card"><h2>Настройки</h2><form id="settings"><div class="form"><label>Имя в сети (.local)<input name="web_hostname" maxlength="32" pattern="[a-zA-Z0-9-]+"></label><label>Яркость<select name="brightness_percent"><option>10</option><option>30</option><option>50</option><option>70</option><option>90</option><option>100</option></select></label><label>Качество записи<select name="compact_audio"><option value="false">16 kHz</option><option value="true">8 kHz compact</option></select></label><label>Сохранение при заряде<select name="low_battery_save_percent"><option value="0">Выкл.</option><option>1</option><option>5</option><option>10</option></select></label><label>Шаг перемотки<select name="seek_step_seconds"><option>5</option><option>10</option><option>20</option><option>60</option></select></label><label>Сортировка<select name="library_sort"><option value="0">Сначала новые</option><option value="1">Сначала старые</option><option value="2">По статусу</option><option value="3">По имени</option></select></label></div><div class="actions"><button>Сохранить</button><span id="saved" class="muted"></span></div></form></section>
+:root{color-scheme:dark;--bg:#0b1020;--card:#151c31;--card2:#0d1427;--line:#29334e;--accent:#6be6c1;--muted:#9ba8c7;--danger:#ff7885;--warn:#ffc86b;--ok:#6be6c1}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f7ff;font:15px/1.4 system-ui,sans-serif}
+main{width:min(960px,calc(100% - 28px));margin:24px auto 48px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-size:26px;margin:0}h2{font-size:17px;margin:0}.lead{color:var(--muted);margin:6px 0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.grid .card{margin:0}.metric{font-size:21px;color:var(--accent);margin-top:4px;overflow-wrap:anywhere}.metric.busy{color:var(--warn)}.metric.bad{color:var(--danger)}
+.muted,small{color:var(--muted)}.row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.bar{height:6px;border-radius:3px;background:var(--card2);margin-top:10px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .4s}.bar i.warn{background:var(--warn)}.bar i.bad{background:var(--danger)}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;border-top:1px solid var(--line);padding:10px 7px;vertical-align:middle}th{color:var(--muted);font-weight:500;font-size:13px}
+a{color:var(--accent)}button{border:0;border-radius:9px;background:var(--accent);color:#061711;padding:10px 16px;font-weight:700;cursor:pointer;font:inherit;font-weight:700}button:disabled{cursor:wait;opacity:.55}
+button.ghost{background:var(--card2);color:var(--accent);border:1px solid var(--line);padding:8px 12px}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;background:var(--card2);color:var(--muted);border:1px solid var(--line);margin-top:3px}
+.badge.ok{color:var(--ok);border-color:#1f5c4c}.badge.work{color:var(--warn);border-color:#6b5320}.badge.bad{color:var(--danger);border-color:#6b2e36}
+.file-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;white-space:nowrap}
+.file-action{width:34px;height:34px;padding:0;border:1px solid var(--line);background:var(--card2);color:var(--accent);font-size:17px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border-radius:9px}.file-action.danger{color:var(--danger)}
+label{display:grid;gap:6px;color:var(--muted);font-size:14px}input,select{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px;background:var(--card2);color:#fff;font:inherit}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:13px}.actions{display:flex;align-items:center;gap:12px;margin-top:15px;flex-wrap:wrap}
+.notice{color:var(--warn);font-size:13px;margin-top:10px}.error{color:var(--danger)}
+audio{width:200px;height:34px}
+@media(max-width:640px){audio{width:118px}.optional{display:none}th,td{padding:9px 3px}.file-action{width:30px;height:30px;font-size:15px}.file-actions{gap:3px}}
+</style></head><body><main>
+<header><h1>Cardputer Recorder</h1><small id="version"></small></header><p class="lead" id="address">Локальная панель устройства</p>
+<section class="grid">
+<div class="card"><div class="muted">Состояние</div><div class="metric" id="mode">…</div><small id="modeHint"></small></div>
+<div class="card"><div class="muted">Wi-Fi</div><div class="metric" id="wifi">…</div><small id="ip"></small></div>
+<div class="card"><div class="muted">microSD</div><div class="metric" id="storage">…</div><div class="bar"><i id="storageBar"></i></div></div>
+<div class="card"><div class="muted">Батарея</div><div class="metric" id="battery">…</div><div class="bar"><i id="batteryBar"></i></div></div>
+</section>
+<section class="card"><div class="row"><h2>Аудиофайлы <small id="count"></small></h2><button class="ghost" id="refresh" type="button">Обновить</button></div><div id="recordings" class="muted">Загрузка…</div><div id="truncated" class="notice" hidden></div></section>
+<section class="card"><h2 style="margin-bottom:14px">Настройки</h2><form id="settings"><div class="form">
+<label>Имя в сети (.local)<input name="web_hostname" maxlength="32" pattern="[a-zA-Z0-9-]+" required></label>
+<label>Яркость<select name="brightness_percent"><option>10</option><option>30</option><option>50</option><option>70</option><option>90</option><option>100</option></select></label>
+<label>Качество записи<select name="compact_audio"><option value="false">16 kHz</option><option value="true">8 kHz compact</option></select></label>
+<label>Сохранение при заряде<select name="low_battery_save_percent"><option value="0">Выкл.</option><option value="1">1%</option><option value="5">5%</option><option value="10">10%</option></select></label>
+<label>Шаг перемотки<select name="seek_step_seconds"><option value="5">5 с</option><option value="10">10 с</option><option value="20">20 с</option><option value="60">60 с</option></select></label>
+<label>Сортировка<select name="library_sort"><option value="0">Сначала новые</option><option value="1">Сначала старые</option><option value="2">По статусу</option><option value="3">По имени</option></select></label>
+</div><div class="actions"><button>Сохранить</button><span id="saved" class="muted"></span></div></form></section>
 <script>
-const $=s=>document.querySelector(s), esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function json(url,options){const r=await fetch(url,options);const x=await r.json();if(!r.ok)throw Error(x.error||r.statusText);return x}
-function bytes(n){for(const u of ['B','KB','MB','GB']){if(n<1024||u==='GB')return (n<10&&u!=='B'?n.toFixed(1):Math.round(n))+' '+u;n/=1024}}
-async function status(){try{const x=await json('/api/status');$('#mode').textContent=x.mode;$('#wifi').textContent=x.wifi.connected?x.wifi.ssid:'Не подключён';$('#ip').textContent=x.wifi.ip||'';$('#storage').textContent=x.storage.mounted?bytes(x.storage.used)+' / '+bytes(x.storage.capacity):'Нет карты';$('#battery').textContent=x.battery.valid?x.battery.percent+'%':'—';$('#address').textContent=x.web.address}catch(e){$('#mode').textContent='Недоступен'}}
-async function recordings(){try{const x=await json('/api/recordings');if(!x.items.length){$('#recordings').textContent='Записей пока нет';return}$('#recordings').innerHTML='<table><thead><tr><th>Имя</th><th class="optional">Размер</th><th>Прослушать</th><th aria-label="Действия"></th></tr></thead><tbody>'+x.items.map(f=>{const q=encodeURIComponent(f.name),u='/api/recordings/download?name='+q,n=esc(f.name);return `<tr><td>${n}<br><small>${esc(f.status)}</small></td><td class="optional">${bytes(f.size)}</td><td><audio controls preload="none" src="${u}"></audio></td><td><div class="file-actions"><a href="${u}" download title="Скачать ${n}" aria-label="Скачать ${n}">&#8681;</a><button class="file-action" data-action="rename" data-name="${n}" title="Переименовать ${n}" aria-label="Переименовать ${n}">&#9998;</button><button class="file-action danger" data-action="delete" data-name="${n}" title="Удалить ${n}" aria-label="Удалить ${n}">&#128465;</button></div></td></tr>`}).join('')+'</tbody></table>'}catch(e){$('#recordings').textContent=e.message}}
-$('#recordings').addEventListener('click',async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const name=b.dataset.name;if(b.dataset.action==='rename'){const base=name.replace(/\.wav$/i,''),next=prompt('Новое имя файла',base);if(next===null||next.trim()===base)return;b.disabled=true;try{await json('/api/recordings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,new_name:next})});await recordings()}catch(error){alert(error.message);b.disabled=false}}else{if(!confirm(`Удалить «${name}»? Это действие нельзя отменить.`))return;b.disabled=true;try{await json('/api/recordings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await recordings()}catch(error){alert(error.message);b.disabled=false}}});
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const NUMERIC=['brightness_percent','low_battery_save_percent','seek_step_seconds','library_sort'];
+const STATUS={SENT:['Отправлено','ok'],TEXT:['Расшифровано','ok'],QUEUE:['В очереди',''],WORK:['Передача','work'],ERROR:['Ошибка','bad'],STOP:['Отменено',''],LOCAL:['Локально','']};
+async function json(url,options){let r;try{r=await fetch(url,options)}catch(e){throw Error('Устройство не отвечает')}let x={};try{x=await r.json()}catch(e){}if(!r.ok)throw Error(x.error||r.statusText);return x}
+function bytes(n){for(const u of ['Б','КБ','МБ','ГБ']){if(n<1024||u==='ГБ')return (n<10&&u!=='Б'?n.toFixed(1):Math.round(n))+' '+u;n/=1024}}
+function when(t){if(!t||t<946684800)return '—';return new Date(t*1000).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}
+function badge(s){const m=STATUS[s]||(/^\d+%$/.test(s)?[s,'work']:[s,'']);return `<span class="badge ${m[1]}">${esc(m[0])}</span>`}
+function bar(el,pct,warnAt,badAt){el.style.width=Math.max(0,Math.min(100,pct))+'%';el.className=pct>=badAt?'bad':pct>=warnAt?'warn':''}
+let busy=false;
+async function status(){try{const x=await json('/api/status');busy=x.mode!=='Готов'&&x.mode!=='Настройки';$('#mode').textContent=x.mode;$('#mode').className='metric'+(busy?' busy':'');$('#modeHint').textContent=busy?'Файлы и настройки недоступны, пока устройство занято':'';$('#version').textContent=x.version?'v'+x.version:'';
+$('#wifi').textContent=x.wifi.connected?x.wifi.ssid:'Не подключён';$('#ip').textContent=[x.wifi.ip,x.wifi.gateway].filter(Boolean).join(' · ');
+if(x.storage.mounted){const p=x.storage.capacity?100*x.storage.used/x.storage.capacity:0;$('#storage').textContent=bytes(x.storage.used)+' / '+bytes(x.storage.capacity);bar($('#storageBar'),p,80,95)}else{$('#storage').textContent='Нет карты';bar($('#storageBar'),0,80,95)}
+if(x.battery.valid){$('#battery').textContent=x.battery.percent+'%';$('#batteryBar').style.width=x.battery.percent+'%';$('#batteryBar').className=x.battery.percent<=10?'bad':x.battery.percent<=25?'warn':''}else{$('#battery').textContent='—';$('#batteryBar').style.width='0'}
+$('#address').textContent=x.web.address||'Локальная панель устройства'}catch(e){$('#mode').textContent='Недоступен';$('#mode').className='metric bad';$('#modeHint').textContent=e.message}}
+async function recordings(){const b=$('#refresh');b.disabled=true;try{const x=await json('/api/recordings');const items=x.items.slice().sort((a,c)=>(c.modified||0)-(a.modified||0)||c.name.localeCompare(a.name));$('#count').textContent=x.total?'('+x.total+')':'';$('#truncated').hidden=!x.truncated;$('#truncated').textContent=x.truncated?`Показаны первые ${items.length} из ${x.total} файлов. Остальные доступны на устройстве.`:'';
+if(!items.length){$('#recordings').textContent='Записей пока нет';return}
+$('#recordings').innerHTML='<table><thead><tr><th>Имя</th><th class="optional">Дата</th><th class="optional">Размер</th><th>Прослушать</th><th aria-label="Действия"></th></tr></thead><tbody>'+items.map(f=>{const q=encodeURIComponent(f.name),u='/api/recordings/download?name='+q,n=esc(f.name);return `<tr><td>${n}<br>${badge(f.status)}</td><td class="optional"><small>${when(f.modified)}</small></td><td class="optional">${bytes(f.size)}</td><td><audio controls preload="none" src="${u}"></audio></td><td><div class="file-actions"><a class="file-action" href="${u}" download="${n}" title="Скачать ${n}" aria-label="Скачать ${n}">&#8681;</a><button type="button" class="file-action" data-action="rename" data-name="${n}" title="Переименовать ${n}" aria-label="Переименовать ${n}">&#9998;</button><button type="button" class="file-action danger" data-action="delete" data-name="${n}" title="Удалить ${n}" aria-label="Удалить ${n}">&#128465;</button></div></td></tr>`}).join('')+'</tbody></table>'}catch(e){$('#recordings').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{b.disabled=false}}
+$('#refresh').addEventListener('click',recordings);
+$('#recordings').addEventListener('click',async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const name=b.dataset.name;if(b.dataset.action==='rename'){const base=name.replace(/\.wav$/i,''),next=prompt('Новое имя файла (A-Z, 0-9, пробел, - или _)',base);if(next===null||next.trim().toUpperCase()===base)return;b.disabled=true;try{await json('/api/recordings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,new_name:next})});await recordings()}catch(error){alert(error.message);b.disabled=false}}else{if(!confirm(`Удалить «${name}»? Это действие нельзя отменить.`))return;b.disabled=true;try{await json('/api/recordings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await recordings()}catch(error){alert(error.message);b.disabled=false}}});
 async function settings(){const x=await json('/api/settings'),f=$('#settings');for(const [k,v] of Object.entries(x))if(f.elements[k])f.elements[k].value=String(v)}
-$('#settings').addEventListener('submit',async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));$('#saved').textContent='Сохраняю…';try{const x=await json('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});$('#saved').textContent='Сохранено';if(x.address)$('#address').textContent=x.address;setTimeout(()=>location.hostname.endsWith('.local')&&x.address?location.href=x.address:location.reload(),700)}catch(e){$('#saved').textContent=e.message}});
-status();recordings();settings().catch(e=>$('#saved').textContent=e.message);setInterval(status,5000);
+$('#settings').addEventListener('submit',async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));for(const k of NUMERIC)if(k in data)data[k]=Number(data[k]);data.compact_audio=data.compact_audio==='true';const btn=e.target.querySelector('button');btn.disabled=true;$('#saved').className='muted';$('#saved').textContent='Сохраняю…';try{const x=await json('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});$('#saved').textContent='Сохранено';if(x.address)$('#address').textContent=x.address;const moved=x.address&&location.hostname.endsWith('.local')&&!x.address.includes('//'+location.hostname+'/');if(moved)setTimeout(()=>location.href=x.address,1200);else{status();recordings();btn.disabled=false}}catch(e){$('#saved').className='error';$('#saved').textContent=e.message;btn.disabled=false}});
+status();recordings();settings().catch(e=>{$('#saved').className='error';$('#saved').textContent=e.message});setInterval(status,5000);
 </script></main></body></html>)HTML";
 
 bool isWav(const String& name)
@@ -412,8 +459,17 @@ void WebService::handleClient(WiFiClient& client)
         handleRecordingDelete(client, body);
     } else if (method == "GET" &&
                target.startsWith("/api/recordings/download?name=")) {
+        String range;
+        const int rangeHeader = lowerHeaders.indexOf("\r\nrange:");
+        if (rangeHeader >= 0) {
+            const int valueStart = rangeHeader + 8;
+            const int valueEnd = lowerHeaders.indexOf("\r\n", valueStart);
+            range = lowerHeaders.substring(valueStart, valueEnd);
+            range.trim();
+        }
         handleRecordingDownload(
-            client, urlDecode(target.substring(target.indexOf('=') + 1)));
+            client, urlDecode(target.substring(target.indexOf('=') + 1)),
+            range);
     } else if (target == "/api/settings" || target == "/api/status" ||
                target == "/api/recordings") {
         sendError(client, 405, "Method not allowed");
@@ -563,7 +619,8 @@ void WebService::handleRecordings(WiFiClient& client)
 }
 
 void WebService::handleRecordingDownload(WiFiClient& client,
-                                         const String& name)
+                                         const String& name,
+                                         const String& range)
 {
     if (!fileIoAllowed_) {
         sendError(client, 503, "Аудиохранилище временно занято");
@@ -582,20 +639,89 @@ void WebService::handleRecordingDownload(WiFiClient& client,
         sendError(client, 404, "Recording not found");
         return;
     }
-    client.printf("HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\n"
-                  "Content-Length: %u\r\nContent-Disposition: inline; "
-                  "filename=\"%s\"\r\nCache-Control: private, no-store\r\n"
+    // Safari and iOS refuse to play <audio> from servers that ignore byte
+    // ranges, and seeking in any browser depends on them, so honour a single
+    // "bytes=start-end" range and answer 206.
+    const std::uint32_t total = file.size();
+    std::uint32_t start = 0;
+    std::uint32_t end = total > 0 ? total - 1 : 0;
+    bool partial = false;
+    if (range.startsWith("bytes=") && total > 0) {
+        const String spec = range.substring(6);
+        const int dash = spec.indexOf('-');
+        if (dash < 0 || spec.indexOf(',') >= 0) {
+            file.close();
+            sendRangeNotSatisfiable(client, total);
+            return;
+        }
+        const String first = spec.substring(0, dash);
+        const String last = spec.substring(dash + 1);
+        if (first.length() == 0) {
+            // Suffix range: the last N bytes.
+            const std::uint32_t suffix = strtoul(last.c_str(), nullptr, 10);
+            if (suffix == 0) {
+                file.close();
+                sendRangeNotSatisfiable(client, total);
+                return;
+            }
+            start = suffix >= total ? 0 : total - suffix;
+        } else {
+            start = strtoul(first.c_str(), nullptr, 10);
+            if (last.length() > 0) {
+                end = min(static_cast<std::uint32_t>(
+                              strtoul(last.c_str(), nullptr, 10)),
+                          total - 1);
+            }
+        }
+        if (start > end || start >= total) {
+            file.close();
+            sendRangeNotSatisfiable(client, total);
+            return;
+        }
+        partial = true;
+    }
+    if (partial && !file.seek(start)) {
+        file.close();
+        sendError(client, 500, "Could not seek recording");
+        return;
+    }
+    const std::uint32_t length = total > 0 ? end - start + 1 : 0;
+    client.printf("HTTP/1.1 %s\r\nContent-Type: audio/wav\r\n"
+                  "Content-Length: %u\r\nAccept-Ranges: bytes\r\n",
+                  partial ? "206 Partial Content" : "200 OK",
+                  static_cast<unsigned int>(length));
+    if (partial) {
+        client.printf("Content-Range: bytes %u-%u/%u\r\n",
+                      static_cast<unsigned int>(start),
+                      static_cast<unsigned int>(end),
+                      static_cast<unsigned int>(total));
+    }
+    client.printf("Content-Disposition: inline; filename=\"%s\"\r\n"
+                  "Cache-Control: private, no-store\r\n"
                   "Connection: close\r\n\r\n",
-                  static_cast<unsigned int>(file.size()), name.c_str());
+                  name.c_str());
     std::uint8_t buffer[2048];
-    while (file.available() && client.connected()) {
-        const std::size_t read = file.read(buffer, sizeof(buffer));
+    std::uint32_t remaining = length;
+    while (remaining > 0 && client.connected()) {
+        const std::size_t chunk =
+            min(static_cast<std::uint32_t>(sizeof(buffer)), remaining);
+        const std::size_t read = file.read(buffer, chunk);
         if (read == 0 || client.write(buffer, read) != read) {
             break;
         }
+        remaining -= read;
         delay(0);
     }
     file.close();
+}
+
+void WebService::sendRangeNotSatisfiable(WiFiClient& client,
+                                         std::uint32_t total)
+{
+    client.printf("HTTP/1.1 416 Range Not Satisfiable\r\n"
+                  "Content-Range: bytes */%u\r\nContent-Length: 0\r\n"
+                  "Accept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                  static_cast<unsigned int>(total));
 }
 
 void WebService::handleRecordingRename(WiFiClient& client,

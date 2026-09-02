@@ -557,11 +557,13 @@ def create_app(
                 stage = "sending_codex"
                 store.update_voice_job(job.id, stage=stage, progress=90)
                 codex_job = await codex.start_turn(job.thread_id, transcript)
-                if is_canceled():
-                    await cancel_codex_job_if_needed(codex_job.id)
-                    return
                 codex_job_id = codex_job.id
+                # Record the turn before checking cancellation so a failed
+                # best-effort cancel never leaves an unreferenced Codex turn.
                 store.update_voice_job(job.id, codex_job_id=codex_job_id)
+                if is_canceled():
+                    await cancel_codex_job_if_needed(codex_job_id)
+                    return
 
             if is_canceled():
                 await cancel_codex_job_if_needed(codex_job_id)
@@ -732,7 +734,7 @@ def create_app(
         if destination in {"codex", "both"} and not SAFE_THREAD_ID.fullmatch(thread_id):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Codex thread is required")
         profile = x_voice_profile.strip().lower() or "default"
-        if not SAFE_PROFILE.fullmatch(profile):
+        if not SAFE_PROFILE.fullmatch(profile) or profile not in PROFILES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid voice profile")
         content_length = _content_length(request)
         if content_length <= 44 or content_length > settings.max_upload_bytes:
@@ -908,7 +910,7 @@ def create_app(
         profile = body.profile.strip().lower() or source.profile
         destination = body.destination.strip().lower() or source.destination
         thread_id = body.thread_id.strip() or source.thread_id
-        if not SAFE_PROFILE.fullmatch(profile):
+        if not SAFE_PROFILE.fullmatch(profile) or profile not in PROFILES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid voice profile")
         if destination not in VOICE_DESTINATIONS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid destination")

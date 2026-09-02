@@ -134,41 +134,29 @@ class Transcriber:
             raise RuntimeError(
                 "WHISPER_SERVER_CHUNK_SECONDS must be a positive integer"
             )
-        with wave.open(str(wav_path), "rb") as source:
-            frames_per_chunk = source.getframerate() * chunk_seconds
-            if frames_per_chunk <= 0:
-                raise RuntimeError("WAV sample rate must be positive")
-            if source.getnframes() <= frames_per_chunk:
+        with tempfile.TemporaryDirectory(prefix="cardputer-whisper-") as temp_dir:
+            # Reading and re-writing a long WAV is blocking file I/O, so split it
+            # in a worker thread instead of stalling the event loop.
+            chunk_paths = await asyncio.to_thread(
+                _split_wav, wav_path, Path(temp_dir), chunk_seconds
+            )
+            if not chunk_paths:
                 return [
                     await self._request_whisper(
                         client, wav_path, original_filename, headers
                     )
                 ]
-
             texts: list[str] = []
-            part_number = 0
-            with tempfile.TemporaryDirectory(prefix="cardputer-whisper-") as temp_dir:
-                while source.tell() < source.getnframes():
-                    part_number += 1
-                    frames = source.readframes(frames_per_chunk)
-                    if not frames:
-                        break
-                    chunk_path = Path(temp_dir) / f"part-{part_number:03d}.wav"
-                    with wave.open(str(chunk_path), "wb") as chunk:
-                        chunk.setnchannels(source.getnchannels())
-                        chunk.setsampwidth(source.getsampwidth())
-                        chunk.setframerate(source.getframerate())
-                        chunk.setcomptype(source.getcomptype(), source.getcompname())
-                        chunk.writeframes(frames)
-                    chunk_name = (
-                        f"{Path(original_filename).stem}.part-{part_number:03d}.wav"
+            for part_number, chunk_path in enumerate(chunk_paths, start=1):
+                chunk_name = (
+                    f"{Path(original_filename).stem}.part-{part_number:03d}.wav"
+                )
+                texts.append(
+                    await self._request_whisper(
+                        client, chunk_path, chunk_name, headers
                     )
-                    texts.append(
-                        await self._request_whisper(
-                            client, chunk_path, chunk_name, headers
-                        )
-                    )
-                    chunk_path.unlink(missing_ok=True)
+                )
+                chunk_path.unlink(missing_ok=True)
             return texts
 
     async def _request_whisper(
@@ -245,3 +233,27 @@ class Transcriber:
         if not text:
             raise RuntimeError("Local transcription returned empty text")
         return text
+
+
+def _split_wav(wav_path: Path, temp_dir: Path, chunk_seconds: int) -> list[Path]:
+    """Split a WAV into fixed-length parts. Returns [] when no split is needed."""
+    with wave.open(str(wav_path), "rb") as source:
+        frames_per_chunk = source.getframerate() * chunk_seconds
+        if frames_per_chunk <= 0:
+            raise RuntimeError("WAV sample rate must be positive")
+        if source.getnframes() <= frames_per_chunk:
+            return []
+        parts: list[Path] = []
+        while source.tell() < source.getnframes():
+            frames = source.readframes(frames_per_chunk)
+            if not frames:
+                break
+            chunk_path = temp_dir / f"part-{len(parts) + 1:03d}.wav"
+            with wave.open(str(chunk_path), "wb") as chunk:
+                chunk.setnchannels(source.getnchannels())
+                chunk.setsampwidth(source.getsampwidth())
+                chunk.setframerate(source.getframerate())
+                chunk.setcomptype(source.getcomptype(), source.getcompname())
+                chunk.writeframes(frames)
+            parts.append(chunk_path)
+        return parts

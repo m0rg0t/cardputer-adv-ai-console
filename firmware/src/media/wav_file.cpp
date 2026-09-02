@@ -401,7 +401,8 @@ bool WavReader::begin(File file)
         }
         const std::uint32_t chunkSize = read32(chunk + 4);
         const std::uint32_t payloadOffset = offset + 8;
-        if (payloadOffset + chunkSize > file.size()) {
+        if (static_cast<std::uint64_t>(payloadOffset) + chunkSize >
+            file.size()) {
             error_ = WavError::kTruncated;
             return false;
         }

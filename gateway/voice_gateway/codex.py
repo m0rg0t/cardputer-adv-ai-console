@@ -449,11 +449,27 @@ class CodexAppServer:
             raise RuntimeError("Codex returned an invalid thread")
         return thread
 
+    def _prune_finished_jobs(self, keep: int = 100) -> None:
+        """Drop the oldest finished jobs so a long-running gateway does not
+        accumulate every turn it ever started. Active jobs are never removed."""
+        finished = [
+            job_id
+            for job_id, job in self.jobs.items()
+            if job.status in {"completed", "failed", "interrupted"}
+        ]
+        for job_id in finished[: max(0, len(finished) - keep)]:
+            job = self.jobs.pop(job_id)
+            if job.turn_id:
+                self.turn_jobs.pop(job.turn_id, None)
+            for approval_id in job.approvals:
+                self.approval_jobs.pop(approval_id, None)
+
     async def start_turn(self, thread_id: str, text: str) -> CodexJob:
         await self._ensure_started()
         if not text.strip():
             raise ValueError("Message text is required")
         await self._request("thread/resume", {"threadId": thread_id})
+        self._prune_finished_jobs()
         job = CodexJob(
             id=uuid.uuid4().hex,
             thread_id=thread_id,

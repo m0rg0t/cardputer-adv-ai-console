@@ -134,7 +134,7 @@ WavError parseWav(const std::uint8_t* data, std::size_t size,
         const std::uint8_t* chunk = data + offset;
         const std::uint32_t chunkSize = read32(chunk + 4);
         const std::size_t payloadOffset = offset + 8;
-        if (payloadOffset + chunkSize > size) {
+        if (static_cast<std::uint64_t>(payloadOffset) + chunkSize > size) {
             return WavError::kTruncated;
         }
 

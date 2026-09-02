@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Fix the web panel silently ignoring brightness, low-battery, seek-step, and
+  sort changes: browser forms post numbers as strings, which the firmware now
+  accepts alongside JSON numbers.
+- Serve recordings with HTTP byte-range support so Safari/iOS can play them and
+  every browser can seek.
+- Refresh the web panel: status badges per recording, modified dates, storage
+  and battery bars, file count with truncation notice, manual refresh, and a
+  compact mobile layout.
+- Bound voice-job polling on the device main loop to a 10 s read timeout so a
+  slow gateway cannot freeze the UI for 30 s per poll.
+- Use 64-bit arithmetic in WAV chunk bounds checks.
+- Gateway: reject unknown voice profiles with 400 instead of silently using
+  `default`, record the Codex turn id before honouring cancellation, split long
+  WAVs for whisper-server in a worker thread, and prune finished Codex jobs
+  from memory.
 - Add a compact same-LAN recorder panel at `recorder.local` with live device,
   Wi-Fi, battery, and microSD status, WAV playback/download, and persistent
   recorder settings.

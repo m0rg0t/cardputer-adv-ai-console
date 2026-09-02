@@ -1643,7 +1643,9 @@ bool UploadService::pollVoiceJob(const String& filename,
         return false;
     }
     http.setConnectTimeout(10000);
-    http.setTimeout(30000);
+    // Polling runs on the main loop, so keep the stall bounded: the response is
+    // a small JSON document and a slow gateway is retried on the next tick.
+    http.setTimeout(10000);
     addAuthHeaders(http);
     const int code = http.GET();
     const String body = http.getString();

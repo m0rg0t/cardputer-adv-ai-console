@@ -46,7 +46,9 @@ private:
     void handleRecordings(WiFiClient& client);
     void handleRecordingRename(WiFiClient& client, const String& body);
     void handleRecordingDelete(WiFiClient& client, const String& body);
-    void handleRecordingDownload(WiFiClient& client, const String& name);
+    void handleRecordingDownload(WiFiClient& client, const String& name,
+                                 const String& range);
+    void sendRangeNotSatisfiable(WiFiClient& client, std::uint32_t total);
     bool safeRecordingName(const String& name) const;
     bool normalizeRecordingName(const String& input, String& name) const;
 
