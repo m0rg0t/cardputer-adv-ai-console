@@ -32,3 +32,6 @@ third_party/
 *.WAV
 *.mp3
 *.sqlite3
+
+# Local device recovery notes (contain device identifiers)
+recovery/
