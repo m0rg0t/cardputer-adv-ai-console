@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep an immutable recording creation timestamp in `/RECORDER.IDX` and use it
+  for device and web sorting, so renaming or updating a WAV no longer moves it
+  in newest/oldest order. Existing recordings are migrated from their current
+  FAT timestamps the first time this firmware starts.
 - Fix the web panel silently ignoring brightness, low-battery, seek-step, and
   sort changes: browser forms post numbers as strings, which the firmware now
   accepts alongside JSON numbers.

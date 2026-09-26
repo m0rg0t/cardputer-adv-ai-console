@@ -103,6 +103,11 @@ public:
     std::size_t pendingRecordingCount();
     String localIp() const;
     std::uint16_t lastHttpStatus() const;
+    std::uint32_t recordingCreatedAt(const String& filename,
+                                     std::uint32_t fallback = 0);
+    bool renameRecordingIndex(const String& oldName,
+                              const String& newName);
+    bool removeRecordingFromIndex(const String& filename);
     bool recordingMetadata(const String& filename,
                            RecordingMetadata& metadata);
     String recordingStatus(const String& filename, std::uint32_t size);
@@ -132,6 +137,17 @@ public:
     bool reprocessVoiceJob(const String& filename, const String& profile);
 
 private:
+    struct RecordingIndexEntry {
+        String name;
+        std::uint32_t createdAt = 0;
+
+        RecordingIndexEntry(const String& recordingName,
+                            std::uint32_t recordingCreatedAt)
+            : name(recordingName), createdAt(recordingCreatedAt)
+        {
+        }
+    };
+
     struct WifiNetwork {
         String ssid;
         String password;
@@ -173,6 +189,10 @@ private:
     };
 
     bool loadConfig();
+    void loadRecordingIndex();
+    void syncRecordingIndex();
+    bool ensureRecordingIndexLoaded();
+    bool saveRecordingIndex();
     bool persistManualNetworks();
     bool restartWifiStation();
     bool connectWifi();
@@ -218,6 +238,7 @@ private:
     static String trimValue(String value);
 
     StorageService* storage_ = nullptr;
+    std::vector<RecordingIndexEntry> recordingIndex_;
     Config config_;
     std::atomic<Status> status_{Status::kDisabled};
     std::atomic<unsigned long> nextActionMs_{0};
@@ -248,6 +269,9 @@ private:
     // diagnostics from the main loop.  Arduino String is not thread-safe, so
     // protect the shared text fields (scalar progress fields remain atomic).
     mutable SemaphoreHandle_t stateMutex_ = nullptr;
+    // Guards recordingIndex_; the upload task renames completed recordings.
+    SemaphoreHandle_t indexMutex_ = nullptr;
+    bool recordingIndexLoaded_ = false;
 };
 
 }  // namespace cardputer_recorder

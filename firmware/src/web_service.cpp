@@ -63,9 +63,9 @@ $('#wifi').textContent=x.wifi.connected?x.wifi.ssid:'Не подключён';$(
 if(x.storage.mounted){const p=x.storage.capacity?100*x.storage.used/x.storage.capacity:0;$('#storage').textContent=bytes(x.storage.used)+' / '+bytes(x.storage.capacity);bar($('#storageBar'),p,80,95)}else{$('#storage').textContent='Нет карты';bar($('#storageBar'),0,80,95)}
 if(x.battery.valid){$('#battery').textContent=x.battery.percent+'%';$('#batteryBar').style.width=x.battery.percent+'%';$('#batteryBar').className=x.battery.percent<=10?'bad':x.battery.percent<=25?'warn':''}else{$('#battery').textContent='—';$('#batteryBar').style.width='0'}
 $('#address').textContent=x.web.address||'Локальная панель устройства'}catch(e){$('#mode').textContent='Недоступен';$('#mode').className='metric bad';$('#modeHint').textContent=e.message}}
-async function recordings(){const b=$('#refresh');b.disabled=true;try{const x=await json('/api/recordings');const items=x.items.slice().sort((a,c)=>(c.modified||0)-(a.modified||0)||c.name.localeCompare(a.name));$('#count').textContent=x.total?'('+x.total+')':'';$('#truncated').hidden=!x.truncated;$('#truncated').textContent=x.truncated?`Показаны первые ${items.length} из ${x.total} файлов. Остальные доступны на устройстве.`:'';
+async function recordings(){const b=$('#refresh');b.disabled=true;try{const x=await json('/api/recordings');const items=x.items.slice().sort((a,c)=>(c.created||0)-(a.created||0)||c.name.localeCompare(a.name));$('#count').textContent=x.total?'('+x.total+')':'';$('#truncated').hidden=!x.truncated;$('#truncated').textContent=x.truncated?`Показаны первые ${items.length} из ${x.total} файлов. Остальные доступны на устройстве.`:'';
 if(!items.length){$('#recordings').textContent='Записей пока нет';return}
-$('#recordings').innerHTML='<table><thead><tr><th>Имя</th><th class="optional">Дата</th><th class="optional">Размер</th><th>Прослушать</th><th aria-label="Действия"></th></tr></thead><tbody>'+items.map(f=>{const q=encodeURIComponent(f.name),u='/api/recordings/download?name='+q,n=esc(f.name);return `<tr><td>${n}<br>${badge(f.status)}</td><td class="optional"><small>${when(f.modified)}</small></td><td class="optional">${bytes(f.size)}</td><td><audio controls preload="none" src="${u}"></audio></td><td><div class="file-actions"><a class="file-action" href="${u}" download="${n}" title="Скачать ${n}" aria-label="Скачать ${n}">&#8681;</a><button type="button" class="file-action" data-action="rename" data-name="${n}" title="Переименовать ${n}" aria-label="Переименовать ${n}">&#9998;</button><button type="button" class="file-action danger" data-action="delete" data-name="${n}" title="Удалить ${n}" aria-label="Удалить ${n}">&#128465;</button></div></td></tr>`}).join('')+'</tbody></table>'}catch(e){$('#recordings').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{b.disabled=false}}
+$('#recordings').innerHTML='<table><thead><tr><th>Имя</th><th class="optional">Дата</th><th class="optional">Размер</th><th>Прослушать</th><th aria-label="Действия"></th></tr></thead><tbody>'+items.map(f=>{const q=encodeURIComponent(f.name),u='/api/recordings/download?name='+q,n=esc(f.name);return `<tr><td>${n}<br>${badge(f.status)}</td><td class="optional"><small>${when(f.created)}</small></td><td class="optional">${bytes(f.size)}</td><td><audio controls preload="none" src="${u}"></audio></td><td><div class="file-actions"><a class="file-action" href="${u}" download="${n}" title="Скачать ${n}" aria-label="Скачать ${n}">&#8681;</a><button type="button" class="file-action" data-action="rename" data-name="${n}" title="Переименовать ${n}" aria-label="Переименовать ${n}">&#9998;</button><button type="button" class="file-action danger" data-action="delete" data-name="${n}" title="Удалить ${n}" aria-label="Удалить ${n}">&#128465;</button></div></td></tr>`}).join('')+'</tbody></table>'}catch(e){$('#recordings').innerHTML='<span class="error">'+esc(e.message)+'</span>'}finally{b.disabled=false}}
 $('#refresh').addEventListener('click',recordings);
 $('#recordings').addEventListener('click',async e=>{const b=e.target.closest('button[data-action]');if(!b)return;const name=b.dataset.name;if(b.dataset.action==='rename'){const base=name.replace(/\.wav$/i,''),next=prompt('Новое имя файла (A-Z, 0-9, пробел, - или _)',base);if(next===null||next.trim().toUpperCase()===base)return;b.disabled=true;try{await json('/api/recordings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,new_name:next})});await recordings()}catch(error){alert(error.message);b.disabled=false}}else{if(!confirm(`Удалить «${name}»? Это действие нельзя отменить.`))return;b.disabled=true;try{await json('/api/recordings',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});await recordings()}catch(error){alert(error.message);b.disabled=false}}});
 async function settings(){const x=await json('/api/settings'),f=$('#settings');for(const [k,v] of Object.entries(x))if(f.elements[k])f.elements[k].value=String(v)}
@@ -599,8 +599,12 @@ void WebService::handleRecordings(WiFiClient& client)
                 JsonObject item = items.add<JsonObject>();
                 item["name"] = name;
                 item["size"] = static_cast<std::uint32_t>(entry.size());
-                item["modified"] =
+                const std::uint32_t modified =
                     static_cast<std::uint32_t>(entry.getLastWrite());
+                item["created"] =
+                    uploader_ != nullptr
+                        ? uploader_->recordingCreatedAt(name, modified)
+                        : modified;
                 item["status"] =
                     uploader_ != nullptr
                         ? uploader_->recordingStatus(
@@ -798,6 +802,10 @@ void WebService::handleRecordingRename(WiFiClient& client,
         sendError(client, 500, "Could not rename recording metadata");
         return;
     }
+    if (uploader_ != nullptr &&
+        !uploader_->renameRecordingIndex(oldName, newName)) {
+        Serial.println("[WEB] Could not rename recording index entry");
+    }
     JsonDocument response;
     response["ok"] = true;
     response["name"] = newName;
@@ -842,6 +850,10 @@ void WebService::handleRecordingDelete(WiFiClient& client,
     if (storage_->exists(metadata.c_str()) &&
         !storage_->remove(metadata.c_str())) {
         Serial.println("[WEB] Could not delete recording metadata sidecar");
+    }
+    if (uploader_ != nullptr &&
+        !uploader_->removeRecordingFromIndex(name)) {
+        Serial.println("[WEB] Could not prune recording index");
     }
     JsonDocument response;
     response["ok"] = true;

@@ -22,7 +22,10 @@ constexpr const char* kManualWifiConfigTempPath = "/AGENT_WIFI.CFG.TMP";
 constexpr const char* kCaPath = "/AGENT_CA.PEM";
 constexpr const char* kLegacyCaPath = "/VOICE_CA.PEM";
 constexpr const char* kSentLedgerPath = "/VOICEAGENT.SENT";
+constexpr const char* kRecordingIndexPath = "/RECORDER.IDX";
+constexpr const char* kRecordingIndexTempPath = "/RECORDER.IDX.TMP";
 constexpr const char* kMetadataSuffix = ".AGENT.JSON";
+constexpr std::uint32_t kMinimumRecordingTime = 946684800;  // 2000-01-01 UTC
 constexpr std::size_t kMaxWifiNetworks = 5;
 constexpr std::size_t kMaxTotalWifiNetworks = 10;
 constexpr std::size_t kMaxVoiceProfiles = 6;
@@ -154,6 +157,29 @@ std::size_t appendDnsLabel(std::uint8_t* packet, std::size_t offset,
     return offset + length;
 }
 
+class RecordingIndexLock {
+public:
+    explicit RecordingIndexLock(SemaphoreHandle_t mutex) : mutex_(mutex)
+    {
+        if (mutex_ != nullptr) {
+            xSemaphoreTake(mutex_, portMAX_DELAY);
+        }
+    }
+
+    ~RecordingIndexLock()
+    {
+        if (mutex_ != nullptr) {
+            xSemaphoreGive(mutex_);
+        }
+    }
+
+    RecordingIndexLock(const RecordingIndexLock&) = delete;
+    RecordingIndexLock& operator=(const RecordingIndexLock&) = delete;
+
+private:
+    SemaphoreHandle_t mutex_;
+};
+
 }  // namespace
 
 void UploadService::lockState() const
@@ -183,6 +209,13 @@ void UploadService::begin(StorageService& storage)
     if (stateMutex_ == nullptr) {
         stateMutex_ = xSemaphoreCreateMutex();
     }
+    if (indexMutex_ == nullptr) {
+        indexMutex_ = xSemaphoreCreateMutex();
+    }
+    {
+        RecordingIndexLock lock(indexMutex_);
+        syncRecordingIndex();
+    }
     activeNetworkIndex_ = 0;
     WiFi.onEvent(
         [this](WiFiEvent_t, WiFiEventInfo_t info) {
@@ -209,6 +242,200 @@ void UploadService::begin(StorageService& storage)
     restartWifiStation();
     status_ = loadConfig() ? Status::kOffline : Status::kDisabled;
     nextActionMs_ = millis() + 1000;
+}
+
+void UploadService::loadRecordingIndex()
+{
+    recordingIndex_.clear();
+    if (!storage_->exists(kRecordingIndexPath) &&
+        storage_->exists(kRecordingIndexTempPath)) {
+        storage_->rename(kRecordingIndexTempPath, kRecordingIndexPath);
+    } else if (storage_->exists(kRecordingIndexTempPath)) {
+        storage_->remove(kRecordingIndexTempPath);
+    }
+    File file = storage_->open(kRecordingIndexPath, FILE_READ);
+    if (!file) {
+        return;
+    }
+    while (file.available()) {
+        String line = file.readStringUntil('\n');
+        if (line.endsWith("\r")) {
+            line.remove(line.length() - 1);
+        }
+        const int separator = line.indexOf('\t');
+        if (separator <= 0 || separator + 1 >= line.length()) {
+            continue;
+        }
+        const std::uint32_t createdAt = static_cast<std::uint32_t>(
+            strtoul(line.substring(0, separator).c_str(), nullptr, 10));
+        const String name = line.substring(separator + 1);
+        if (createdAt < kMinimumRecordingTime || name.indexOf('\t') >= 0 ||
+            name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0) {
+            continue;
+        }
+        const auto duplicate = std::find_if(
+            recordingIndex_.begin(), recordingIndex_.end(),
+            [&name](const RecordingIndexEntry& entry) {
+                return entry.name == name;
+            });
+        if (duplicate == recordingIndex_.end()) {
+            recordingIndex_.push_back({name, createdAt});
+        }
+    }
+    file.close();
+}
+
+bool UploadService::saveRecordingIndex()
+{
+    if (storage_->exists(kRecordingIndexTempPath)) {
+        storage_->remove(kRecordingIndexTempPath);
+    }
+    File file = storage_->open(kRecordingIndexTempPath, FILE_WRITE);
+    if (!file) {
+        return false;
+    }
+    bool success = true;
+    for (const auto& entry : recordingIndex_) {
+        const String line = String(entry.createdAt) + "\t" + entry.name + "\n";
+        if (file.print(line) != line.length()) {
+            success = false;
+            break;
+        }
+    }
+    file.flush();
+    file.close();
+    if (!success) {
+        storage_->remove(kRecordingIndexTempPath);
+        return false;
+    }
+    if (storage_->exists(kRecordingIndexPath) &&
+        !storage_->remove(kRecordingIndexPath)) {
+        storage_->remove(kRecordingIndexTempPath);
+        return false;
+    }
+    return storage_->rename(kRecordingIndexTempPath, kRecordingIndexPath);
+}
+
+void UploadService::syncRecordingIndex()
+{
+    if (storage_ == nullptr || !storage_->isMounted()) {
+        return;
+    }
+    loadRecordingIndex();
+    recordingIndexLoaded_ = true;
+    bool changed = false;
+    for (auto entry = recordingIndex_.begin();
+         entry != recordingIndex_.end();) {
+        const String path = "/" + entry->name;
+        if (!storage_->exists(path.c_str())) {
+            entry = recordingIndex_.erase(entry);
+            changed = true;
+        } else {
+            ++entry;
+        }
+    }
+
+    File directory = storage_->open("/", FILE_READ);
+    if (directory && directory.isDirectory()) {
+        File file = directory.openNextFile();
+        while (file) {
+            String name = file.name();
+            if (name.startsWith("/")) {
+                name.remove(0, 1);
+            }
+            String lower = name;
+            lower.toLowerCase();
+            const auto found = std::find_if(
+                recordingIndex_.begin(), recordingIndex_.end(),
+                [&name](const RecordingIndexEntry& entry) {
+                    return entry.name == name;
+                });
+            const std::uint32_t modified =
+                static_cast<std::uint32_t>(file.getLastWrite());
+            if (!file.isDirectory() && lower.endsWith(".wav") &&
+                modified >= kMinimumRecordingTime &&
+                found == recordingIndex_.end()) {
+                recordingIndex_.push_back({name, modified});
+                changed = true;
+            }
+            file.close();
+            file = directory.openNextFile();
+        }
+        directory.close();
+    }
+    if (changed && !saveRecordingIndex()) {
+        Serial.println("[RECORDER] Could not save recording index.");
+    }
+}
+
+bool UploadService::ensureRecordingIndexLoaded()
+{
+    if (!recordingIndexLoaded_) {
+        syncRecordingIndex();
+    }
+    return recordingIndexLoaded_ && storage_ != nullptr &&
+           storage_->isMounted();
+}
+
+std::uint32_t UploadService::recordingCreatedAt(
+    const String& filename, std::uint32_t fallback)
+{
+    RecordingIndexLock lock(indexMutex_);
+    if (!ensureRecordingIndexLoaded()) {
+        return fallback;
+    }
+    const auto found = std::find_if(
+        recordingIndex_.begin(), recordingIndex_.end(),
+        [&filename](const RecordingIndexEntry& entry) {
+            return entry.name == filename;
+        });
+    if (found != recordingIndex_.end()) {
+        return found->createdAt;
+    }
+    if (fallback >= kMinimumRecordingTime) {
+        recordingIndex_.push_back({filename, fallback});
+        if (!saveRecordingIndex()) {
+            Serial.println("[RECORDER] Could not extend recording index.");
+        }
+    }
+    return fallback;
+}
+
+bool UploadService::renameRecordingIndex(const String& oldName,
+                                         const String& newName)
+{
+    RecordingIndexLock lock(indexMutex_);
+    if (!ensureRecordingIndexLoaded()) {
+        return false;
+    }
+    const auto found = std::find_if(
+        recordingIndex_.begin(), recordingIndex_.end(),
+        [&oldName](const RecordingIndexEntry& entry) {
+            return entry.name == oldName;
+        });
+    if (found == recordingIndex_.end()) {
+        return true;
+    }
+    found->name = newName;
+    return saveRecordingIndex();
+}
+
+bool UploadService::removeRecordingFromIndex(const String& filename)
+{
+    RecordingIndexLock lock(indexMutex_);
+    if (!ensureRecordingIndexLoaded()) {
+        return false;
+    }
+    const auto found = std::find_if(
+        recordingIndex_.begin(), recordingIndex_.end(),
+        [&filename](const RecordingIndexEntry& entry) {
+            return entry.name == filename;
+        });
+    if (found == recordingIndex_.end()) {
+        return true;
+    }
+    recordingIndex_.erase(found);
+    return saveRecordingIndex();
 }
 
 void UploadService::update(bool ioAllowed)
@@ -1434,7 +1661,9 @@ bool UploadService::renameCompletedRecording(
     String candidate = suggestedFilename;
     candidate.trim();
     if (candidate.length() < 5 || candidate.length() > 180 ||
-        candidate.indexOf('/') >= 0 || candidate.indexOf('\\') >= 0) {
+        candidate.indexOf('/') >= 0 || candidate.indexOf('\\') >= 0 ||
+        candidate.indexOf('\t') >= 0 || candidate.indexOf('\r') >= 0 ||
+        candidate.indexOf('\n') >= 0) {
         return true;
     }
     String lower = candidate;
@@ -1462,6 +1691,9 @@ bool UploadService::renameCompletedRecording(
     }
     if (storage_->exists(oldRoute.c_str())) {
         storage_->rename(oldRoute.c_str(), newRoute.c_str());
+    }
+    if (!renameRecordingIndex(filename, candidate)) {
+        Serial.println("[RECORDER] Could not rename recording index entry.");
     }
     finalFilename = candidate;
     return true;

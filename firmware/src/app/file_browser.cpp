@@ -14,7 +14,7 @@ constexpr std::size_t kMaxRenameBaseLength = 32;
 
 struct RecordingSortInfo {
     String name;
-    std::time_t modified = 0;
+    std::time_t createdAt = 0;
     std::uint8_t statusRank = 0;
 };
 
@@ -104,6 +104,9 @@ void RecorderApp::deleteSelected()
     const String metadata = agentMetadataSidecar(filename);
     if (storage_.exists(metadata.c_str())) {
         storage_.remove(metadata.c_str());
+    }
+    if (!uploader_.removeRecordingFromIndex(filename)) {
+        Serial.println("[RECORDER] Could not prune recording index.");
     }
     message_ = "Deleted " + filename;
     deleteConfirm_ = false;
@@ -242,7 +245,7 @@ void RecorderApp::scanFiles()
 
 void RecorderApp::sortFiles()
 {
-    if (files_.size() < 2) {
+    if (files_.empty()) {
         return;
     }
 
@@ -260,7 +263,8 @@ void RecorderApp::sortFiles()
         std::uint32_t size = 0;
         if (file) {
             size = static_cast<std::uint32_t>(file.size());
-            info.modified = file.getLastWrite();
+            info.createdAt = uploader_.recordingCreatedAt(
+                name, static_cast<std::uint32_t>(file.getLastWrite()));
             file.close();
         }
         info.statusRank = recordingStatusRank(
@@ -274,9 +278,9 @@ void RecorderApp::sortFiles()
                const RecordingSortInfo& right) {
             switch (mode) {
                 case LibrarySortMode::kOldest:
-                    if (left.modified != right.modified &&
-                        left.modified > 0 && right.modified > 0) {
-                        return left.modified < right.modified;
+                    if (left.createdAt != right.createdAt &&
+                        left.createdAt > 0 && right.createdAt > 0) {
+                        return left.createdAt < right.createdAt;
                     }
                     return left.name < right.name;
                 case LibrarySortMode::kStatus:
@@ -288,9 +292,9 @@ void RecorderApp::sortFiles()
                     return left.name < right.name;
                 case LibrarySortMode::kNewest:
                 default:
-                    if (left.modified != right.modified &&
-                        left.modified > 0 && right.modified > 0) {
-                        return left.modified > right.modified;
+                    if (left.createdAt != right.createdAt &&
+                        left.createdAt > 0 && right.createdAt > 0) {
+                        return left.createdAt > right.createdAt;
                     }
                     return left.name > right.name;
             }
@@ -592,6 +596,9 @@ void RecorderApp::commitRename()
     if (storage_.exists(fromMetadata.c_str()) &&
         !storage_.rename(fromMetadata.c_str(), toMetadata.c_str())) {
         Serial.println("[RECORDER] Could not rename metadata sidecar.");
+    }
+    if (!uploader_.renameRecordingIndex(renameOriginalName_, targetName)) {
+        Serial.println("[RECORDER] Could not rename recording index entry.");
     }
     if (wasLocked) {
         auto found = std::find(lockedFiles_.begin(), lockedFiles_.end(),
