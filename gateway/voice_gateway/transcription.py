@@ -200,7 +200,9 @@ class Transcriber:
             raise RuntimeError(f"{provider} returned invalid JSON") from error
         if not isinstance(payload, dict):
             raise RuntimeError(f"{provider} returned an invalid response")
-        text = payload.get("text", "")
+        # A present empty string is a valid silent chunk. An absent field is
+        # malformed and must not silently disappear from a multi-part result.
+        text = payload.get("text")
         if not isinstance(text, str):
             raise RuntimeError(f"{provider} returned invalid transcript text")
         return text.strip()
@@ -257,3 +259,4 @@ def _split_wav(wav_path: Path, temp_dir: Path, chunk_seconds: int) -> list[Path]
                 chunk.writeframes(frames)
             parts.append(chunk_path)
         return parts
+

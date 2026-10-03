@@ -144,7 +144,7 @@ export default function Home() {
         <div className="shell">
           <div className="section-heading compact">
             <div><span className="kicker">INTERFACE / 03</span><h2>Designed for the<br />screen in your hand.</h2></div>
-            <p>Contextual help, service diagnostics, readable transcripts, Wi-Fi scanning, and clear delivery states fit a 240 × 135 display. Frames are rendered from the firmware's own drawing code by the desktop preview.</p>
+            <p>Contextual help, service diagnostics, readable transcripts, Wi-Fi scanning, and clear delivery states fit a 240 × 135 display. Frames are rendered from the firmware&apos;s own drawing code by the desktop preview.</p>
           </div>
           <div className="screen-grid">
             <figure className="screen-large"><img src="images/screens/recording.png" alt="Active recording screen" /><figcaption><span>01</span> Capture</figcaption></figure>
@@ -207,3 +207,4 @@ export default function Home() {
     </main>
   );
 }
+
