@@ -1060,3 +1060,45 @@ def test_codex_prunes_only_finished_jobs() -> None:
     assert len(server.jobs) == 101
     assert "done-0" not in server.jobs and "turn-0" not in server.turn_jobs
     assert "done-104" in server.jobs
+
+
+@pytest.mark.parametrize("payload", [{}, {"text": None}, {"text": 17}, {"text": []}])
+def test_transcription_response_requires_string_text(payload):
+    response = httpx.Response(200, json=payload)
+    with pytest.raises(RuntimeError, match="invalid transcript text"):
+        Transcriber._response_text(response, "Test provider")
+
+
+@pytest.mark.parametrize("text", ["", "  ", "\n\t"])
+def test_transcription_response_accepts_silent_text(text):
+    assert Transcriber._response_text(httpx.Response(200, json={"text": text}), "Test") == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("middle", [{}, {"text": ""}, {"text": "  "}])
+async def test_whisper_middle_chunk_response_contract(settings, tmp_path, middle):
+    """Missing text is malformed; an explicitly silent middle chunk is valid."""
+    path = tmp_path / "synthetic.wav"
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(100)
+        wav.writeframes(b"\x00\x00" * 2500)
+    configured = Settings(**{**settings.__dict__, "whisper_server_chunk_seconds": 10})
+    calls = []
+    responses = [{"text": "first"}, middle, {"text": "third"}]
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json=responses[len(calls) - 1])
+
+    transcriber = Transcriber(configured)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        if "text" not in middle:
+            with pytest.raises(RuntimeError, match="invalid transcript text"):
+                await transcriber._whisper_wav_chunks(client, path, "synthetic.wav", {})
+            assert len(calls) == 2
+        else:
+            result = await transcriber._whisper_wav_chunks(client, path, "synthetic.wav", {})
+            assert result == ["first", "", "third"]
+            assert len(calls) == 3

@@ -136,3 +136,18 @@ WhisperServer, Codex App Server, and the configured transcript formatter.
 Do not expose the HTTP development server directly to the public internet. For
 remote use, place it behind an HTTPS reverse proxy and copy that proxy's CA
 certificate to the Cardputer SD card as `/AGENT_CA.PEM`.
+
+
+### Transcription response validation
+
+Provider responses must contain a string `text` field. A present empty string
+remains valid for a silent Whisper chunk; a missing or non-string field now fails
+the request instead of silently dropping that malformed chunk from the result.
+The gateway tests use synthetic WAVs and mocked HTTP transports, without model
+downloads or provider calls. An entirely empty combined transcript retains its
+existing error behavior.
+
+The refreshed `uv.lock` is checked with the `dev` extra (pytest 9.1.1); CI uses
+`--frozen` to keep the resolved versions reproducible. The optional
+`local-whisper` dependency graph is resolved in the lock but was not installed
+or exercised during these checks; no model weights were downloaded.

@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -13,13 +16,32 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install PlatformIO
-        run: pip install platformio==6.1.19
+        run: pip install platformio==6.2.0
       - name: Build firmware
         run: platformio run -d firmware -e cardputer-adv-recorder
       - name: Run native tests
         run: platformio test -d firmware -e native-tests
       - name: Test gateway
         run: |
-          pip install uv
+          pip install uv==0.12.22
           cd gateway
-          uv run --extra dev pytest
+          uv run --frozen --extra dev pytest
+
+  site:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
